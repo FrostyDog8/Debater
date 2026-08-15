@@ -6,18 +6,13 @@ Same pattern as [Lyrico](https://github.com/FrostyDog8/Lyrico): push `main`, the
 
 ### 1. Create the GitHub repository
 
-```bash
-cd E:\WePlay\DebateRoulette
-gh repo create FrostyDog8/DebateRoulette --public --source=. --remote=origin --push
-```
-
-Or in the browser: new empty repo `DebateRoulette` (no README), then:
+The GitHub repo is [FrostyDog8/Debater](https://github.com/FrostyDog8/Debater). Local `origin` already points there. First push from `E:\WePlay\DebateRoulette`:
 
 ```bash
-git remote add origin https://github.com/FrostyDog8/DebateRoulette.git
-git branch -M main
 git push -u origin main
 ```
+
+GitHub’s default README commit is already on `main`, so the first push may need a merge before it will accept the app.
 
 ### 2. Enable Pages from Actions
 
@@ -25,9 +20,9 @@ git push -u origin main
 2. **Source:** GitHub Actions
 3. Wait for the **Deploy GitHub Pages** workflow on `main`
 
-Site: `https://FrostyDog8.github.io/DebateRoulette/`
+Site: `https://FrostyDog8.github.io/Debater/`
 
-Join links look like: `https://FrostyDog8.github.io/DebateRoulette/#/r/ABCD`
+Join links look like: `https://FrostyDog8.github.io/Debater/#/r/ABCD`
 
 ### 3. Supabase
 
@@ -61,3 +56,7 @@ npm run dev
 ```
 
 Local changes do not hit the live site until you push.
+
+## Ads
+
+Deferred for v1. The live site does not show AdSense or ad placeholders on home, lobby, or debate. Do not add AdSense env vars on Pages until ads ship.

@@ -30,7 +30,7 @@ jobs:
       - run: npm test
       - run: npm run build
         env:
-          VITE_BASE: /DebateRoulette/
+          VITE_BASE: /Debater/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

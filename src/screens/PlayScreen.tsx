@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import { AdSlot } from '../components/AdSlot';
 import {
   CLAP_COOLDOWN_MS,
   MIN_TEXT,
@@ -66,7 +65,6 @@ export function PlayScreen({
   const isListener = listeners.includes(selfId);
   const isDebater = currentDebaters(engine).includes(selfId);
   const needPack = playersNeedingPack(engine).includes(selfId);
-  const adsOn = engine.phase === 'debate';
 
   const clapLocked = now - (input.lastClapAt ?? 0) < CLAP_COOLDOWN_MS;
   const [draft, setDraft] = useState({ topic: '', stanceA: '', stanceB: '' });
@@ -276,7 +274,6 @@ export function PlayScreen({
         </button>
       </div>
       {error ? <p className="err">{error}</p> : null}
-      <AdSlot show={adsOn} />
     </div>
   );
 }

@@ -1,5 +1,3 @@
-import { AdSlot } from '../components/AdSlot';
-
 type Props = {
   name: string;
   code: string;
@@ -44,7 +42,6 @@ export function HomeScreen({ name, code, error, busy, onName, onCode, onHost, on
         </div>
       </div>
       {error ? <p className="err">{error}</p> : null}
-      <AdSlot show />
     </div>
   );
 }

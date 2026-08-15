@@ -15,4 +15,4 @@ Write-Host "Pushing to GitHub..." -ForegroundColor Yellow
 git push
 
 Write-Host "Done. Live in 1-2 minutes:" -ForegroundColor Green
-Write-Host "https://FrostyDog8.github.io/DebateRoulette/" -ForegroundColor Cyan
+Write-Host "https://FrostyDog8.github.io/Debater/" -ForegroundColor Cyan

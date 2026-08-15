@@ -4,7 +4,7 @@ Standalone party debate game. Phones or PCs in a browser. Talk in the room or on
 
 This is **not** the WePlay app. It is its own git repo and GitHub Pages site. It talks to the **same Supabase project** WePlay already uses.
 
-Live (after you push): `https://FrostyDog8.github.io/DebateRoulette/`
+Live (after you push): `https://FrostyDog8.github.io/Debater/`
 
 ## Local
 
@@ -38,4 +38,4 @@ See [DEPLOY.md](DEPLOY.md). Or run `.\update-github.ps1` after the remote exists
 
 ## Ads
 
-Reserved strip on the home/lobby screens and during debate only. Wire AdSense later with `VITE_ADSENSE_CLIENT` / `VITE_ADSENSE_SLOT`.
+Deferred. v1 ships without AdSense or ad placeholders on home, lobby, or play. Wire ads later.

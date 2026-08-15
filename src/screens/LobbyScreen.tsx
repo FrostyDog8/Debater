@@ -1,4 +1,3 @@
-import { AdSlot } from '../components/AdSlot';
 import { MIN_START_PLAYERS, type Settings, type SpeakMode } from '../lib/engine';
 import { joinUrl, type Room } from '../lib/session';
 
@@ -106,7 +105,6 @@ export function LobbyScreen({
         </button>
       </div>
       {error ? <p className="err">{error}</p> : null}
-      <AdSlot show />
     </div>
   );
 }
