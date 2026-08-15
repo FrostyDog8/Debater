@@ -16,9 +16,11 @@ GitHub’s default README commit is already on `main`, so the first push may nee
 
 ### 2. Enable Pages from Actions
 
+Use **GitHub Actions**, not **Deploy from a branch**. Branch deploy publishes the source `index.html` and shows a blank screen.
+
 1. Repo **Settings → Pages**
 2. **Source:** GitHub Actions
-3. Wait for the **Deploy GitHub Pages** workflow on `main`
+3. Re-run the **Deploy GitHub Pages** workflow if it failed with “Get Pages site failed”
 
 Site: `https://FrostyDog8.github.io/Debater/`
 
