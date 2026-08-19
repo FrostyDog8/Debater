@@ -595,6 +595,14 @@ export function allSplitsIn(engine: Engine, roomPlayerIds: PlayerId[]): boolean 
   return voters.every((id) => engine.splitA[id] != null);
 }
 
+export function splitVoteProgress(engine: Engine, roomPlayerIds: PlayerId[]): { have: number; need: number } {
+  const voters = listenersOf(engine, roomPlayerIds);
+  return {
+    have: voters.filter((id) => engine.splitA[id] != null).length,
+    need: voters.length,
+  };
+}
+
 export function matchPoints(engine: Engine, roomPlayerIds: PlayerId[]): { a: number; b: number } {
   const m = currentMatch(engine);
   if (!m) return { a: 0, b: 0 };
@@ -660,6 +668,11 @@ function twoLowest(ids: PlayerId[], scores: Record<PlayerId, number>): PlayerId[
 
 function finishStage(engine: Engine): Engine {
   const kind = engine.stageKind;
+  const currentIds = sortIds(engine.activeIds);
+  const resetUsedPackIds = engine.usedPackIds.filter((packId) => {
+    const pack = engine.packPool.find((p) => p.id === packId);
+    return !pack || !currentIds.includes(pack.authorId);
+  });
 
   if (kind === 'final') {
     if (engine.lastDraw) return beginFinalTopicCollection(engine);
@@ -674,6 +687,7 @@ function finishStage(engine: Engine): Engine {
     return {
       ...engine,
       phase: 'collect_packs',
+      usedPackIds: resetUsedPackIds,
       matches: [],
       matchIndex: 0,
       leftoverPending: false,
@@ -696,6 +710,7 @@ function finishStage(engine: Engine): Engine {
     phase: 'collect_packs',
     stageKind: nextKind,
     activeIds: remaining,
+    usedPackIds: resetUsedPackIds,
     matches: [],
     matchIndex: 0,
     leftoverId: null,
@@ -724,11 +739,17 @@ export function hostContinue(engine: Engine, roomPlayerIds: PlayerId[], rng: () 
       if (stageFor(remaining.length) === 'final') {
         return beginFinalTopicCollection({ ...engine, activeIds: remaining });
       }
+      const priorIds = sortIds(engine.activeIds);
+      const resetUsedPackIds = engine.usedPackIds.filter((packId) => {
+        const pack = engine.packPool.find((p) => p.id === packId);
+        return !pack || !priorIds.includes(pack.authorId);
+      });
       return {
         ...engine,
         phase: 'collect_packs',
         stageKind: stageFor(remaining.length),
         activeIds: remaining,
+        usedPackIds: resetUsedPackIds,
         matches: [],
         matchIndex: 0,
         leftoverId: null,

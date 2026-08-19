@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  allTopicVotesIn,
   allRequiredPacksIn,
   CLAP_COOLDOWN_MS,
   VOTE_POINTS,
@@ -12,6 +13,7 @@ import {
   packProgress,
   packTextReady,
   peekNextMatch,
+  splitVoteProgress,
   hasUnusedPack,
   stancesFor,
   turnLabel,
@@ -90,6 +92,10 @@ export function PlayScreen({
   const clapTotal = clapsA + clapsB;
   const turnWho = whoseTurn(engine);
   const turnText = turnLabel(engine);
+  const voteProgress = splitVoteProgress(engine, ids);
+  const finalTopicVoters = ids.filter((id) => !engine.activeIds.includes(id));
+  const finalTopicVotesIn = finalTopicVoters.filter((id) => !!engine.topicVotes[id]).length;
+  const allFinalTopicVotesIn = allTopicVotesIn(engine, ids);
 
   const sendPack = () => {
     if (!packValid) return;
@@ -158,22 +164,27 @@ export function PlayScreen({
         {engine.phase === 'vote_final_topic' && (
           <>
             <h2>Vote for the finals topic</h2>
+            <p className="vote-progress">
+              Votes in {finalTopicVotesIn} / {finalTopicVoters.length || '—'}
+            </p>
             {engine.activeIds.includes(selfId) ? <p>Finalists do not vote.</p> : null}
-            <div className="topic-list">
-              {listenerPacks(engine).map((p) => (
-                <button
-                  key={p.id}
-                  className="btn ghost"
-                  disabled={!isListener || !!input.topicVote}
-                  onClick={() => onInput({ ...input, topicVote: p.id })}
-                >
-                  {p.topic}
-                </button>
-              ))}
-            </div>
+            {isListener ? (
+              <div className="topic-list">
+                {listenerPacks(engine).map((p) => (
+                  <button
+                    key={p.id}
+                    className="btn ghost"
+                    disabled={!!input.topicVote}
+                    onClick={() => onInput({ ...input, topicVote: p.id })}
+                  >
+                    {p.topic}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             {host ? (
               <div className="dock" style={{ marginTop: 'auto', paddingTop: 8 }}>
-                <button className="btn" onClick={onHostContinue}>
+                <button className="btn" disabled={!allFinalTopicVotesIn} onClick={onHostContinue}>
                   Tally topic votes
                 </button>
               </div>
@@ -247,6 +258,9 @@ export function PlayScreen({
 
         {engine.phase === 'split_vote' && (
           <>
+            <p className="vote-progress">
+              Votes in {voteProgress.have} / {voteProgress.need || '—'}
+            </p>
             {isDebater ? <p>Debaters wait. Listeners split {VOTE_POINTS}.</p> : null}
             {isListener && input.splitA == null ? (
               <SplitPicker
@@ -272,7 +286,7 @@ export function PlayScreen({
               <span> · </span>
               {nameOf(room, match.bId)} {formatPoints(engine.lastPointsB)}
             </p>
-            <Scoreboard room={room} engine={engine} showScores />
+            <Scoreboard room={room} engine={engine} showScores highlightOutcome={!upcoming && engine.stageKind !== 'final'} />
             {upcoming ? (
               <p className="next-up">
                 Next up: {nameOf(room, upcoming.aId)} vs {nameOf(room, upcoming.bId)}
@@ -338,12 +352,30 @@ function ClapButton({
   );
 }
 
-function Scoreboard({ room, engine, showScores }: { room: Room; engine: Engine; showScores: boolean }) {
+function Scoreboard({
+  room,
+  engine,
+  showScores,
+  highlightOutcome = false,
+}: {
+  room: Room;
+  engine: Engine;
+  showScores: boolean;
+  highlightOutcome?: boolean;
+}) {
   const rows = [...engine.activeIds].sort((a, b) => (engine.scores[b] ?? 0) - (engine.scores[a] ?? 0));
+  const cutoff = engine.stageKind === 'n3' ? 1 : 2;
+  const sortedAsc = [...engine.activeIds].sort((a, b) => (engine.scores[a] ?? 0) - (engine.scores[b] ?? 0) || a.localeCompare(b));
+  const eliminated = highlightOutcome ? new Set(sortedAsc.slice(0, cutoff)) : new Set<string>();
   return (
     <div className="scoreboard">
       {rows.map((id) => (
-        <div key={id}>
+        <div
+          key={id}
+          className={
+            highlightOutcome ? (eliminated.has(id) ? 'score-out' : 'score-safe') : undefined
+          }
+        >
           <span>{room.players.find((p) => p.id === id)?.name ?? id.slice(0, 6)}</span>
           <span>{showScores ? formatPoints(engine.scores[id] ?? 0) : ''}</span>
         </div>
