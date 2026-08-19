@@ -32,6 +32,11 @@ type PlayerRow = {
   joined_at: string;
 };
 
+function settingsFromGameState(raw: unknown): unknown | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return (raw as { lobbySettings?: unknown }).lobbySettings ?? null;
+}
+
 function roomFromRows(room: RoomRow, players: PlayerRow[]): Room {
   const mapped: Player[] = players
     .sort((a, b) => a.joined_at.localeCompare(b.joined_at))
@@ -42,7 +47,7 @@ function roomFromRows(room: RoomRow, players: PlayerRow[]): Room {
     gameId: room.game_id ?? null,
     status: room.status === 'playing' ? 'playing' : room.status === 'paused' ? 'paused' : 'lobby',
     gameState: room.game_state ?? null,
-    lobbySettings: room.lobby_settings ?? null,
+    lobbySettings: room.lobby_settings ?? settingsFromGameState(room.game_state),
     players: mapped,
   };
 }
@@ -147,13 +152,43 @@ export async function cloudKickPlayer(params: { roomCode: string; hostUserId: st
 }
 
 export async function cloudPatchLobbySettings(params: { roomCode: string; hostUserId: string; settings: unknown }) {
-  const { error } = await supabase
+  const code = params.roomCode.trim().toUpperCase();
+  const settings = params.settings;
+
+  const { error: rpcErr } = await supabase.rpc('patch_room_lobby_settings', {
+    p_room_code: code,
+    p_settings: settings,
+  });
+  if (!rpcErr) return;
+  if (!isMissingRpc(rpcErr)) throw rpcErr;
+
+  const { data, error } = await supabase
     .from('rooms')
-    .update({ lobby_settings: params.settings })
-    .eq('code', params.roomCode.trim().toUpperCase())
+    .update({ lobby_settings: settings })
+    .eq('code', code)
     .eq('host_user_id', params.hostUserId)
-    .eq('status', 'lobby');
-  if (error && !String(error.message ?? '').toLowerCase().includes('lobby_settings')) throw error;
+    .eq('status', 'lobby')
+    .select('code');
+  if (!error && data?.length) return;
+  const missingCol =
+    !!error && (error.code === 'PGRST204' || String(error.message ?? '').toLowerCase().includes('lobby_settings'));
+  if (error && !missingCol) throw error;
+
+  const { data: row, error: readErr } = await supabase.from('rooms').select('game_state').eq('code', code).maybeSingle();
+  if (readErr) throw readErr;
+  const prev =
+    row?.game_state && typeof row.game_state === 'object' && !Array.isArray(row.game_state)
+      ? (row.game_state as Record<string, unknown>)
+      : {};
+  const { data: saved, error: gsErr } = await supabase
+    .from('rooms')
+    .update({ game_state: { ...prev, lobbySettings: settings } })
+    .eq('code', code)
+    .eq('host_user_id', params.hostUserId)
+    .eq('status', 'lobby')
+    .select('code');
+  if (gsErr) throw gsErr;
+  if (!saved?.length) throw new Error('Could not save lobby settings');
 }
 
 export async function cloudStartGame(params: { roomCode: string; hostUserId: string; gameState: unknown }) {
@@ -181,16 +216,22 @@ export async function cloudPatchGameState(params: { roomCode: string; patch: unk
   if (error) throw error;
 }
 
-export async function cloudReturnToLobby(params: { roomCode: string; hostUserId: string }) {
+export async function cloudReturnToLobby(params: { roomCode: string; hostUserId: string; settings?: unknown }) {
   const code = params.roomCode.trim().toUpperCase();
   const { error: rpcErr } = await supabase.rpc('return_room_to_lobby', { p_room_code: code });
-  if (!rpcErr) return;
-  if (!isMissingRpc(rpcErr)) throw rpcErr;
-  await supabase
-    .from('rooms')
-    .update({ status: 'lobby', game_state: null })
-    .eq('code', code)
-    .eq('host_user_id', params.hostUserId);
+  if (rpcErr && !isMissingRpc(rpcErr)) throw rpcErr;
+  if (rpcErr) {
+    await supabase
+      .from('rooms')
+      .update({ status: 'lobby', game_state: params.settings != null ? { lobbySettings: params.settings } : null })
+      .eq('code', code)
+      .eq('host_user_id', params.hostUserId);
+  }
+  if (params.settings != null) {
+    await cloudPatchLobbySettings({ roomCode: code, hostUserId: params.hostUserId, settings: params.settings }).catch(() => {
+      /* broadcast still goes out from the caller */
+    });
+  }
 }
 
 export async function cloudFetchRoom(roomCode: string): Promise<Room> {
@@ -208,15 +249,25 @@ export function cloudSubscribeRoom(params: {
   onRoom(room: Room): void;
   onRoomClosed(): void;
   onError(message: string): void;
-}): { unsubscribe(): void } {
+  onLobbySettings?(settings: unknown): void;
+  onSettingsRequested?(): void;
+}): { unsubscribe(): void; publishLobbySettings(settings: unknown): void } {
   const code = params.roomCode.trim().toUpperCase();
   let channel: RealtimeChannel | null = null;
+  let refreshTimer: number | null = null;
   let cancelled = false;
+  let lastLobbySettings: unknown = null;
+
+  const applyRoom = (room: Room) => {
+    if (room.lobbySettings != null) lastLobbySettings = room.lobbySettings;
+    else if (lastLobbySettings != null) room = { ...room, lobbySettings: lastLobbySettings };
+    params.onRoom(room);
+  };
 
   const refresh = async () => {
     try {
       const room = await cloudFetchRoom(code);
-      if (!cancelled) params.onRoom(room);
+      if (!cancelled) applyRoom(room);
     } catch (e: unknown) {
       if (cancelled) return;
       if (isLobbyNotFoundError(e)) params.onRoomClosed();
@@ -226,21 +277,43 @@ export function cloudSubscribeRoom(params: {
 
   void refresh();
   channel = supabase
-    .channel(`room:${code}`)
+    .channel(`room:${code}`, { config: { broadcast: { ack: true } } })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'room_players', filter: `room_code=eq.${code}` }, () =>
       refresh(),
     )
-    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `code=eq.${code}` }, () => refresh())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `code=eq.${code}` }, () => refresh())
     .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'rooms', filter: `code=eq.${code}` }, () => {
       if (!cancelled) params.onRoomClosed();
     })
+    .on('broadcast', { event: 'lobby-settings' }, (e) => {
+      if (cancelled) return;
+      lastLobbySettings = e.payload;
+      params.onLobbySettings?.(e.payload);
+    })
+    .on('broadcast', { event: 'need-lobby-settings' }, () => {
+      if (!cancelled) params.onSettingsRequested?.();
+    })
     .subscribe((status) => {
       if (status === 'CHANNEL_ERROR') params.onError('Realtime channel error');
+      if (status === 'SUBSCRIBED') {
+        void refresh();
+        void channel?.send({ type: 'broadcast', event: 'need-lobby-settings', payload: {} });
+      }
     });
 
+  // Fallback polling keeps clients synced even if realtime events are dropped.
+  refreshTimer = window.setInterval(() => {
+    if (!cancelled) void refresh();
+  }, 1500);
+
   return {
+    publishLobbySettings(settings: unknown) {
+      lastLobbySettings = settings;
+      void channel?.send({ type: 'broadcast', event: 'lobby-settings', payload: settings });
+    },
     unsubscribe() {
       cancelled = true;
+      if (refreshTimer != null) window.clearInterval(refreshTimer);
       if (channel) supabase.removeChannel(channel);
       channel = null;
     },

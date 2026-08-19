@@ -19,15 +19,38 @@ export type Room = {
 export function randomRoomCode(): string {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
   let out = '';
-  for (let i = 0; i < 4; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)]!;
+  do {
+    out = '';
+    for (let i = 0; i < 4; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)]!;
+  } while (out === 'TEST');
   return out;
 }
 
 export const NAME_KEY = 'debate-roulette-name';
 
+export function labSeat(): string {
+  try {
+    return new URLSearchParams(window.location.search).get('seat')?.replace(/[^\w-]/g, '').slice(0, 8) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function nameStore(): Storage {
+  return labSeat() ? window.sessionStorage : window.localStorage;
+}
+
+function nameKey(): string {
+  const seat = labSeat();
+  return seat ? `${NAME_KEY}-${seat}` : NAME_KEY;
+}
+
 export function loadName(): string {
   try {
-    return localStorage.getItem(NAME_KEY)?.trim() || '';
+    const saved = nameStore().getItem(nameKey())?.trim();
+    if (saved) return saved;
+    const seat = labSeat();
+    return seat ? `Player ${seat}` : '';
   } catch {
     return '';
   }
@@ -35,7 +58,7 @@ export function loadName(): string {
 
 export function saveName(name: string) {
   try {
-    localStorage.setItem(NAME_KEY, name.trim());
+    nameStore().setItem(nameKey(), name.trim());
   } catch {
     /* ignore */
   }

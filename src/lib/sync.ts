@@ -1,14 +1,14 @@
 import type { Engine, PlayerId } from './engine';
-import { addPack, parseEngine, submitSplit, voteFinalTopic } from './engine';
+import { addPack, packTextReady, parseEngine, submitSplit, voteFinalTopic } from './engine';
 import { playerInputKey, type GamePayload } from './cloud';
 
 export type PlayerInput = {
-  pack?: { topic: string; stanceA: string; stanceB: string };
+  pack?: { topic: string; stanceA: string; stanceB: string } | null;
   clapsA?: number;
   clapsB?: number;
   lastClapAt?: number;
-  splitA?: number;
-  topicVote?: string;
+  splitA?: number | null;
+  topicVote?: string | null;
 };
 
 export function readInputs(payload: GamePayload | null | undefined, playerIds: PlayerId[]): Record<PlayerId, PlayerInput> {
@@ -27,7 +27,7 @@ export function applyGuestInputs(engine: Engine, payload: GamePayload | null | u
   for (const id of roomIds) {
     const inp = inputs[id];
     if (!inp) continue;
-    if (inp.pack) e = addPack(e, id, inp.pack);
+    if (inp.pack && packTextReady(inp.pack.topic, inp.pack.stanceA, inp.pack.stanceB)) e = addPack(e, id, inp.pack);
     if (inp.topicVote) e = voteFinalTopic(e, id, inp.topicVote);
     if (typeof inp.splitA === 'number') e = submitSplit(e, id, inp.splitA, roomIds);
     if (typeof inp.clapsA === 'number' || typeof inp.clapsB === 'number') {
@@ -45,4 +45,30 @@ export function parsePayload(raw: unknown, playerIds: PlayerId[]): { engine: Eng
   const payload = (raw && typeof raw === 'object' ? raw : {}) as GamePayload;
   const engine = applyGuestInputs(parseEngine(payload.engine, playerIds), payload, playerIds);
   return { engine, payload };
+}
+
+export function wipedInputs(playerIds: PlayerId[]): Record<string, PlayerInput> {
+  return Object.fromEntries(
+    playerIds.map((id) => [
+      playerInputKey(id),
+      { pack: null, splitA: null, topicVote: null, clapsA: 0, clapsB: 0, lastClapAt: 0 },
+    ]),
+  );
+}
+
+export function wipeSplitsKeepClaps(payload: GamePayload | null | undefined, playerIds: PlayerId[]): Record<string, PlayerInput> {
+  const current = readInputs(payload, playerIds);
+  return Object.fromEntries(
+    playerIds.map((id) => [
+      playerInputKey(id),
+      {
+        clapsA: current[id]?.clapsA ?? 0,
+        clapsB: current[id]?.clapsB ?? 0,
+        lastClapAt: current[id]?.lastClapAt,
+        splitA: null,
+        topicVote: null,
+        pack: null,
+      },
+    ]),
+  );
 }

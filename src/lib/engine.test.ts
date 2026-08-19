@@ -7,13 +7,16 @@ import {
   createEngine,
   currentMatch,
   currentPack,
+  beginFinalTopicCollection,
+  listenerPacks,
   lowestDrop,
   matchPoints,
+  parseSettings,
   stageFor,
   submitSplit,
   tickClock,
   VOTE_POINTS,
-  TWENTIETHS_PER_VOTE,
+  SCORE_SCALE,
   listenersOf,
 } from './engine';
 
@@ -104,7 +107,7 @@ describe('lowestDrop', () => {
 });
 
 describe('scoring', () => {
-  it('counts 11-split as twentieths and claps as 1/20', () => {
+  it('counts a 10-point split and claps as 0.1 each', () => {
     const ids = ['a', 'b', 'c'];
     let e = beginPairedStage(fillPacks(ids, rng(1)), rng(1));
     const m = currentMatch(e)!;
@@ -118,8 +121,8 @@ describe('scoring', () => {
     e = { ...e, phase: 'split_vote' };
     e = submitSplit(e, voter, 8, room);
     const pts = matchPoints(e, room);
-    expect(pts.a).toBe(8 * TWENTIETHS_PER_VOTE + 2);
-    expect(pts.b).toBe((VOTE_POINTS - 8) * TWENTIETHS_PER_VOTE);
+    expect(pts.a).toBe(8 * SCORE_SCALE + 2);
+    expect(pts.b).toBe((VOTE_POINTS - 8) * SCORE_SCALE);
     expect(currentPack(e)?.authorId).not.toBe(m.aId);
   });
 
@@ -136,7 +139,7 @@ describe('scoring', () => {
     const listeners = listenersOf(e, ids);
     for (const v of listeners) e = submitSplit(e, v, 6, ids);
     const pts = matchPoints(e, ids);
-    expect(pts.a).toBe(listeners.length * 6 * TWENTIETHS_PER_VOTE + listeners.length * TWENTIETHS_PER_VOTE);
+    expect(pts.a).toBe(listeners.length * 6 * SCORE_SCALE + listeners.length * SCORE_SCALE);
   });
 });
 
@@ -150,5 +153,72 @@ describe('clock', () => {
     e = { ...e, settings: { ...e.settings, speakMode: 'free_for_all' } };
     e = tickClock(e, (e.phaseEndsAtMs ?? 0) + 1);
     expect(e.phase).toBe('split_vote');
+  });
+});
+
+describe('finals', () => {
+  it('empties the old topic pool and resets scores', () => {
+    const ids = ['a', 'b', 'c'];
+    let e = beginPairedStage(fillPacks(ids, rng(1)), rng(1));
+    e = { ...e, scores: { a: 50, b: 40, c: 10 } };
+    e = beginFinalTopicCollection({ ...e, activeIds: ['a', 'b'] });
+    expect(e.phase).toBe('collect_final_topics');
+    expect(e.stageKind).toBe('final');
+    expect(e.usedPackIds.sort()).toEqual(e.packPool.map((p) => p.id).sort());
+    expect(e.finalPackIds).toEqual([]);
+    expect(e.scores).toEqual({ a: 0, b: 0 });
+    expect(listenerPacks(e)).toEqual([]);
+  });
+
+  it('resets scores when a paired round starts', () => {
+    const ids = ['a', 'b', 'c'];
+    let e = fillPacks(ids, rng(6));
+    e = { ...e, scores: { a: 99, b: 88, c: 77 } };
+    e = beginPairedStage(e, rng(6));
+    expect(e.scores).toEqual({ a: 0, b: 0, c: 0 });
+  });
+});
+
+describe('clock leftovers', () => {
+  it('clears leftover split votes when debate ends', () => {
+    const ids = ['a', 'b', 'c'];
+    let e = beginPairedStage(fillPacks(ids, rng(5)), rng(5));
+    e = {
+      ...e,
+      phase: 'debate',
+      splitA: { c: 8 },
+      phaseEndsAtMs: 1,
+      settings: { ...e.settings, speakMode: 'free_for_all' },
+    };
+    e = tickClock(e, 2);
+    expect(e.phase).toBe('split_vote');
+    expect(e.splitA).toEqual({});
+  });
+});
+
+describe('packs', () => {
+  it('rejects a topic with empty stances', () => {
+    const ids = ['a', 'b', 'c'];
+    let e = createEngine(ids);
+    e = addPack(e, 'a', { topic: 'Cats vs dogs xx', stanceA: '', stanceB: '' });
+    expect(e.packPool).toEqual([]);
+    e = addPack(e, 'a', { topic: 'Cats vs dogs xx', stanceA: 'Cats are better.', stanceB: 'Dogs are better.' });
+    expect(e.packPool).toHaveLength(1);
+  });
+});
+
+describe('parseSettings', () => {
+  it('snaps prep by 5s and debate by 10s', () => {
+    expect(parseSettings({ prepSeconds: 7, debateSeconds: 24 })).toEqual({
+      prepSeconds: 5,
+      debateSeconds: 20,
+      speakMode: 'timed_turns',
+    });
+    expect(parseSettings({ prepSeconds: 12, debateSeconds: 55 }).prepSeconds).toBe(10);
+    expect(parseSettings({ prepSeconds: 12, debateSeconds: 55 }).debateSeconds).toBe(60);
+  });
+
+  it('reads old debateMinutes as seconds', () => {
+    expect(parseSettings({ debateMinutes: 2 }).debateSeconds).toBe(120);
   });
 });

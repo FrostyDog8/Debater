@@ -2,23 +2,34 @@ export type PlayerId = string;
 
 export const GAME_ID = 'debate-web';
 export const MIN_START_PLAYERS = 3;
-export const VOTE_POINTS = 11;
-export const TWENTIETHS_PER_VOTE = 20;
-export const CLAP_TWENTIETHS = 1;
+export const VOTE_POINTS = 10;
+export const SCORE_SCALE = 10;
+export const CLAP_SCORE = 1;
 export const CLAP_COOLDOWN_MS = 2000;
-export const MIN_TEXT = 3;
+export const MIN_TEXT = 1;
+
+export function packTextReady(topic: string, stanceA: string, stanceB: string): boolean {
+  return topic.trim().length >= MIN_TEXT && stanceA.trim().length >= MIN_TEXT && stanceB.trim().length >= MIN_TEXT;
+}
+
+export const PREP_MIN_SEC = 5;
+export const PREP_STEP_SEC = 5;
+export const PREP_MAX_SEC = 120;
+export const DEBATE_MIN_SEC = 20;
+export const DEBATE_STEP_SEC = 10;
+export const DEBATE_MAX_SEC = 600;
 
 export type SpeakMode = 'timed_turns' | 'free_for_all';
 
 export type Settings = {
   prepSeconds: number;
-  debateMinutes: number;
+  debateSeconds: number;
   speakMode: SpeakMode;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
   prepSeconds: 30,
-  debateMinutes: 2,
+  debateSeconds: 120,
   speakMode: 'timed_turns',
 };
 
@@ -87,12 +98,21 @@ export function stageFor(n: number): StageKind {
   return 'n6';
 }
 
+function snapRange(value: number, min: number, step: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  const snapped = Math.round(value / step) * step;
+  return Math.max(min, Math.min(max, snapped));
+}
+
 export function parseSettings(raw: unknown): Settings {
-  const r = (raw ?? {}) as Partial<Settings>;
-  const prep = Math.max(5, Math.min(120, Number(r.prepSeconds) || DEFAULT_SETTINGS.prepSeconds));
-  const debate = Math.max(1, Math.min(10, Number(r.debateMinutes) || DEFAULT_SETTINGS.debateMinutes));
+  const r = (raw ?? {}) as Partial<Settings> & { debateMinutes?: number };
+  const prep = snapRange(Number(r.prepSeconds) || DEFAULT_SETTINGS.prepSeconds, PREP_MIN_SEC, PREP_STEP_SEC, PREP_MAX_SEC);
+  const debateRaw =
+    Number(r.debateSeconds) ||
+    (Number(r.debateMinutes) > 0 ? Number(r.debateMinutes) * 60 : DEFAULT_SETTINGS.debateSeconds);
+  const debate = snapRange(debateRaw, DEBATE_MIN_SEC, DEBATE_STEP_SEC, DEBATE_MAX_SEC);
   const speakMode: SpeakMode = r.speakMode === 'free_for_all' ? 'free_for_all' : 'timed_turns';
-  return { prepSeconds: prep, debateMinutes: debate, speakMode };
+  return { prepSeconds: prep, debateSeconds: debate, speakMode };
 }
 
 function shuffled<T>(items: T[], rng: () => number): T[] {
@@ -153,8 +173,47 @@ export function playersNeedingPack(engine: Engine): PlayerId[] {
   return engine.activeIds.filter((id) => !hasUnusedPack(engine, id));
 }
 
+export function expectedPackAuthors(engine: Engine, roomPlayerIds: PlayerId[]): PlayerId[] {
+  if (engine.phase === 'collect_packs') return engine.activeIds;
+  if (engine.phase === 'collect_final_topics') {
+    return roomPlayerIds.filter((id) => !engine.activeIds.includes(id));
+  }
+  return [];
+}
+
+export function submittedPackAuthors(engine: Engine, roomPlayerIds: PlayerId[]): PlayerId[] {
+  if (engine.phase === 'collect_packs') return engine.activeIds.filter((id) => hasUnusedPack(engine, id));
+  if (engine.phase === 'collect_final_topics') {
+    const allow = new Set(engine.finalPackIds);
+    const authors = new Set(engine.packPool.filter((p) => allow.has(p.id)).map((p) => p.authorId));
+    return expectedPackAuthors(engine, roomPlayerIds).filter((id) => authors.has(id));
+  }
+  return [];
+}
+
+export function packProgress(engine: Engine, roomPlayerIds: PlayerId[]): { have: number; need: number } {
+  const need = expectedPackAuthors(engine, roomPlayerIds).length;
+  const have = submittedPackAuthors(engine, roomPlayerIds).length;
+  return { have, need };
+}
+
 export function currentMatch(engine: Engine): Match | null {
   return engine.matches[engine.matchIndex] ?? null;
+}
+
+export function peekNextMatch(engine: Engine): { aId: PlayerId; bId: PlayerId } | null {
+  if (engine.phase !== 'match_result') return null;
+  if (engine.stageKind === 'final') return null;
+  const next = engine.matches[engine.matchIndex + 1];
+  if (next) return { aId: next.aId, bId: next.bId };
+  if (engine.leftoverPending && engine.leftoverId) {
+    const played = engine.activeIds.filter((id) => id !== engine.leftoverId);
+    const worst = twoLowest(played, engine.scores);
+    const better = [...worst].sort((a, b) => (engine.scores[b] ?? 0) - (engine.scores[a] ?? 0) || a.localeCompare(b))[0];
+    if (!better) return null;
+    return { aId: engine.leftoverId, bId: better };
+  }
+  return null;
 }
 
 export function currentDebaters(engine: Engine): PlayerId[] {
@@ -206,12 +265,13 @@ export function addPack(
   const topic = entry.topic.trim();
   const stanceA = entry.stanceA.trim();
   const stanceB = entry.stanceB.trim();
-  if (topic.length < MIN_TEXT || stanceA.length < MIN_TEXT || stanceB.length < MIN_TEXT) return engine;
+  if (topic.length < 1 || stanceA.length < 1 || stanceB.length < 1) return engine;
 
   if (engine.phase === 'collect_packs') {
     if (engine.activeIds.includes(authorId) && hasUnusedPack(engine, authorId)) return engine;
   } else if (engine.phase === 'collect_final_topics') {
     if (engine.activeIds.includes(authorId)) return engine;
+    if (engine.finalPackIds.some((id) => engine.packPool.find((p) => p.id === id)?.authorId === authorId)) return engine;
   } else {
     return engine;
   }
@@ -231,10 +291,12 @@ export function addPack(
   };
 }
 
-export function allRequiredPacksIn(engine: Engine): boolean {
+export function allRequiredPacksIn(engine: Engine, roomPlayerIds: PlayerId[] = []): boolean {
   if (engine.phase === 'collect_packs') return playersNeedingPack(engine).length === 0;
   if (engine.phase === 'collect_final_topics') {
-    return listenerPacks(engine).length > 0;
+    const expected = expectedPackAuthors(engine, roomPlayerIds);
+    if (expected.length === 0) return listenerPacks(engine).length > 0;
+    return submittedPackAuthors(engine, roomPlayerIds).length >= expected.length;
   }
   return false;
 }
@@ -364,10 +426,12 @@ export function beginPairedStage(engine: Engine, rng: () => number = Math.random
 }
 
 export function beginFinalTopicCollection(engine: Engine): Engine {
+  const ids = sortIds(engine.activeIds);
   return {
     ...engine,
     phase: 'collect_final_topics',
     stageKind: 'final',
+    activeIds: ids,
     matches: [],
     matchIndex: 0,
     leftoverId: null,
@@ -375,13 +439,19 @@ export function beginFinalTopicCollection(engine: Engine): Engine {
     autoOutId: null,
     topicVotes: {},
     finalPackIds: [],
+    usedPackIds: engine.packPool.map((p) => p.id),
+    scores: resetStageScores(ids),
+    lastPointsA: 0,
+    lastPointsB: 0,
+    lastDraw: engine.lastDraw && engine.stageKind === 'final',
     phaseEndsAtMs: null,
     turnIndex: 0,
     splitA: {},
     clapA: {},
     clapB: {},
+    lastClapAt: {},
     championId: null,
-    replayNote: engine.lastDraw ? 'Final was a draw — new topic, same finalists.' : null,
+    replayNote: engine.stageKind === 'final' && engine.lastDraw ? 'Final was a draw — new topic, same finalists.' : null,
   };
 }
 
@@ -397,7 +467,7 @@ export function maybeLockFinalTopics(engine: Engine, roomPlayerIds: PlayerId[]):
   if (listeners.length <= 1 || packs.length === 1) {
     return startFinalWithPack(engine, packs[0]!.id);
   }
-  return { ...engine, phase: 'vote_final_topic', splitA: {}, clapA: {}, clapB: {} };
+  return { ...engine, phase: 'vote_final_topic', topicVotes: {}, splitA: {}, clapA: {}, clapB: {} };
 }
 
 export function voteFinalTopic(engine: Engine, voterId: PlayerId, packId: string): Engine {
@@ -470,7 +540,7 @@ export function tickClock(engine: Engine, now = Date.now()): Engine {
   if (engine.phaseEndsAtMs == null || now < engine.phaseEndsAtMs) return engine;
 
   if (engine.phase === 'prep') {
-    const totalMs = engine.settings.debateMinutes * 60 * 1000;
+    const totalMs = engine.settings.debateSeconds * 1000;
     const beat = engine.settings.speakMode === 'timed_turns' ? Math.floor(totalMs / 4) : totalMs;
     return {
       ...engine,
@@ -482,11 +552,11 @@ export function tickClock(engine: Engine, now = Date.now()): Engine {
 
   if (engine.phase === 'debate') {
     if (engine.settings.speakMode === 'timed_turns' && engine.turnIndex < 3) {
-      const totalMs = engine.settings.debateMinutes * 60 * 1000;
+      const totalMs = engine.settings.debateSeconds * 1000;
       const beat = Math.floor(totalMs / 4);
       return { ...engine, turnIndex: engine.turnIndex + 1, phaseEndsAtMs: now + beat };
     }
-    return { ...engine, phase: 'split_vote', phaseEndsAtMs: null };
+    return { ...engine, phase: 'split_vote', phaseEndsAtMs: null, splitA: {} };
   }
 
   return engine;
@@ -534,21 +604,21 @@ export function matchPoints(engine: Engine, roomPlayerIds: PlayerId[]): { a: num
   for (const id of voters) {
     const split = engine.splitA[id];
     if (split != null) {
-      a += split * TWENTIETHS_PER_VOTE;
-      b += (VOTE_POINTS - split) * TWENTIETHS_PER_VOTE;
+      a += split * SCORE_SCALE;
+      b += (VOTE_POINTS - split) * SCORE_SCALE;
     }
-    a += (engine.clapA[id] ?? 0) * CLAP_TWENTIETHS;
-    b += (engine.clapB[id] ?? 0) * CLAP_TWENTIETHS;
+    a += (engine.clapA[id] ?? 0) * CLAP_SCORE;
+    b += (engine.clapB[id] ?? 0) * CLAP_SCORE;
   }
   if (m.leftoverBonus) {
-    a += voters.length * TWENTIETHS_PER_VOTE;
+    a += voters.length * SCORE_SCALE;
   }
   return { a, b };
 }
 
-export function formatPoints(twentieths: number): string {
-  const whole = twentieths / TWENTIETHS_PER_VOTE;
-  return whole.toFixed(whole % 1 === 0 ? 0 : 2);
+export function formatPoints(units: number): string {
+  const whole = units / SCORE_SCALE;
+  return whole.toFixed(whole % 1 === 0 ? 0 : 1);
 }
 
 export function resolveSplit(engine: Engine, roomPlayerIds: PlayerId[]): Engine {
@@ -618,10 +688,12 @@ function finishStage(engine: Engine): Engine {
   let remaining = engine.activeIds.filter((id) => !drop.includes(id));
   remaining = sortIds(remaining);
   const nextKind = stageFor(remaining.length);
-  const nextPhase: Phase = nextKind === 'final' ? 'collect_final_topics' : 'collect_packs';
+  if (nextKind === 'final') {
+    return beginFinalTopicCollection({ ...engine, activeIds: remaining });
+  }
   return {
     ...engine,
-    phase: nextPhase,
+    phase: 'collect_packs',
     stageKind: nextKind,
     activeIds: remaining,
     matches: [],
@@ -649,11 +721,13 @@ export function hostContinue(engine: Engine, roomPlayerIds: PlayerId[], rng: () 
         remaining = remaining.filter((id) => id !== loser);
       }
       remaining = sortIds(remaining);
-      const nextKind = stageFor(remaining.length);
+      if (stageFor(remaining.length) === 'final') {
+        return beginFinalTopicCollection({ ...engine, activeIds: remaining });
+      }
       return {
         ...engine,
-        phase: nextKind === 'final' ? 'collect_final_topics' : 'collect_packs',
-        stageKind: nextKind,
+        phase: 'collect_packs',
+        stageKind: stageFor(remaining.length),
         activeIds: remaining,
         matches: [],
         matchIndex: 0,
@@ -703,11 +777,11 @@ export function hostContinue(engine: Engine, roomPlayerIds: PlayerId[], rng: () 
     return finishStage(engine);
   }
 
-  if (engine.phase === 'collect_packs' && allRequiredPacksIn(engine)) {
+  if (engine.phase === 'collect_packs' && allRequiredPacksIn(engine, roomPlayerIds)) {
     return beginPairedStage(engine, rng);
   }
 
-  if (engine.phase === 'collect_final_topics') {
+  if (engine.phase === 'collect_final_topics' && allRequiredPacksIn(engine, roomPlayerIds)) {
     return maybeLockFinalTopics(engine, roomPlayerIds);
   }
 
