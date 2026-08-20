@@ -673,12 +673,21 @@ input[readonly] { opacity: 0.75; }
   gap: 0.45rem;
   overflow: hidden;
 }
-.lobby-grid > .card.fill {
+.lobby-grid > .card.players-card {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.lobby-grid > .card.settings-card {
+  flex: 0 0 auto;
+  overflow: visible;
 }
 .lobby .player-list {
   flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 .lobby-code-card { display: flex; flex-direction: column; align-items: center; gap: 0.35rem; }
@@ -762,14 +771,22 @@ input[readonly] { opacity: 0.75; }
 .player-row {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 0.3rem;
   font-size: 0.88rem;
   min-width: 0;
 }
-.player-list.host-view .player-row { width: 100%; }
-.player-list.host-view .kick-btn,
-.player-list.host-view .kick-slot { width: 3.4rem; flex: 0 0 auto; text-align: center; }
+.player-list.roster-view .player-row { width: 100%; }
+.player-list.roster-view .kick-btn,
+.player-list.roster-view .kick-slot {
+  width: 3.4rem;
+  flex: 0 0 auto;
+  text-align: center;
+}
+.kick-slot {
+  display: inline-block;
+  min-height: 1em;
+}
 .player-name-line,
 .name-edit {
   width: min(11rem, 46vw);
@@ -801,22 +818,6 @@ input[readonly] { opacity: 0.75; }
   color: var(--mute);
   line-height: 1.1;
 }
-.player-list.guest-view {
-  align-items: stretch;
-  width: 100%;
-}
-.player-list.guest-view.cols-2 { justify-items: stretch; }
-.player-list.guest-view .player-row {
-  justify-content: flex-start;
-  width: 100%;
-}
-.player-list.guest-view .player-name-line,
-.player-list.guest-view .name-edit {
-  text-align: left;
-  width: min(11rem, 46vw);
-  flex: 0 0 auto;
-}
-.player-list.guest-view .name-edit { width: min(11rem, 46vw); flex: 0 0 auto; }
 .kick-btn { flex: 0 0 auto; }
 .player-name-line { min-width: 0; }
 .topic-list {
@@ -855,9 +856,13 @@ input[readonly] { opacity: 0.75; }
     min-height: 0;
     overflow: hidden;
   }
-  .lobby-grid > .card.fill {
+  .lobby-grid > .card.players-card,
+  .lobby-grid > .card.settings-card {
     min-height: 0;
     overflow: hidden;
+  }
+  .lobby-grid > .card.settings-card {
+    overflow: auto;
   }
 }
 

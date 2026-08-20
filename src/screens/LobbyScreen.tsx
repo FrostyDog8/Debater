@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   DEBATE_MAX_SEC,
   DEBATE_MIN_SEC,
@@ -44,7 +44,9 @@ export function LobbyScreen({
   const canStart = host && room.players.length >= MIN_START_PLAYERS;
   const [copied, setCopied] = useState(false);
   const [draftName, setDraftName] = useState(self?.name ?? '');
+  const [twoCols, setTwoCols] = useState(false);
   const nameTimer = useRef<number | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setDraftName(self?.name ?? '');
@@ -55,7 +57,36 @@ export function LobbyScreen({
     if (b.id === selfId) return 1;
     return 0;
   });
-  const twoCols = listed.length >= 6;
+
+  // Prefer one column while it fits; switch to two columns when the list would overflow.
+  // Scrolling only kicks in after two columns still exceed the available height.
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+
+    const measure = () => {
+      const rows = [...list.querySelectorAll<HTMLElement>('.player-row')];
+      if (rows.length < 2) {
+        setTwoCols(false);
+        return;
+      }
+      const styles = getComputedStyle(list);
+      const gap = parseFloat(styles.rowGap || styles.gap || '0') || 0;
+      let singleColHeight = 0;
+      rows.forEach((row, i) => {
+        singleColHeight += row.getBoundingClientRect().height;
+        if (i > 0) singleColHeight += gap;
+      });
+      const available = list.clientHeight;
+      setTwoCols(available > 0 && singleColHeight > available + 1);
+    };
+
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(list);
+    if (list.parentElement) ro.observe(list.parentElement);
+    return () => ro.disconnect();
+  }, [listed.length]);
 
   const commit = (next: Settings) => onSettings(next);
 
@@ -94,9 +125,9 @@ export function LobbyScreen({
         </div>
       </div>
       <div className="lobby-grid">
-        <div className="card fill">
+        <div className="card fill players-card">
           <h2>Players ({room.players.length})</h2>
-          <div className={`player-list ${host ? 'host-view' : 'guest-view'}${twoCols ? ' cols-2' : ''}`}>
+          <div ref={listRef} className={`player-list roster-view${twoCols ? ' cols-2' : ''}`}>
             {listed.map((p) => (
               <div key={p.id} className={`player-row${p.id === selfId ? ' self' : ''}`}>
                 {p.id === selfId ? (
@@ -118,14 +149,14 @@ export function LobbyScreen({
                   <button className="btn ghost tiny kick-btn" onClick={() => onKick(p.id)}>
                     Kick
                   </button>
-                ) : host ? (
-                  <span className="kick-slot" />
-                ) : null}
+                ) : (
+                  <span className="kick-slot" aria-hidden />
+                )}
               </div>
             ))}
           </div>
         </div>
-        <div className="card fill">
+        <div className="card settings-card">
           <h2>Game settings</h2>
           <div className="settings-grid">
             <TimeStepper
