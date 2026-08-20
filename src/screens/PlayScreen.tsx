@@ -162,7 +162,13 @@ export function PlayScreen({
             {engine.phase === 'collect_final_topics' && engine.activeIds.includes(selfId) ? (
               <p>You are in the final. Wait for listeners to pick a new topic.</p>
             ) : packIn ? (
-              <p>Pack in. Waiting on others…</p>
+              <p>
+                {packsReady
+                  ? host
+                    ? 'All topics are in. Start the round when you’re ready.'
+                    : 'All topics are in. Waiting for the host to start the round.'
+                  : 'Pack in. Waiting on others…'}
+              </p>
             ) : (
               <>
                 <label>Topic</label>
@@ -184,7 +190,9 @@ export function PlayScreen({
                   Play round
                 </button>
               ) : (
-                <span className="names">{packsReady ? 'Waiting for the host.' : 'Waiting for every topic.'}</span>
+                <span className="names">
+                  {packsReady ? 'Waiting for the host to start the round.' : 'Waiting for every topic.'}
+                </span>
               )}
             </div>
           </>
