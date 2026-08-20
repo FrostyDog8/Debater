@@ -1,0 +1,90 @@
+html, body, #root {
+  height: 100%;
+  height: 100dvh;
+  margin: 0;
+  overflow: hidden;
+}
+.lab-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #0e0c0a;
+  color: #f4efe6;
+  font-family: Georgia, "Palatino Linotype", serif;
+  font-size: 12px;
+  overflow: hidden;
+}
+.lab-bar {
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 0 10px;
+  border-bottom: 1px solid #3a342c;
+  background: #1b1814;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.lab-bar strong {
+  color: #d4a054;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.lab-bar span, .lab-bar label, .lab-bar a { color: #9a9286; font-size: 11px; }
+.lab-bar b { color: #d4a054; letter-spacing: 0.16em; }
+.lab-bar select, .lab-bar button {
+  font: inherit;
+  font-size: 11px;
+  color: #f4efe6;
+  background: #13110e;
+  border: 1px solid #3a342c;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.lab-bar button { background: #d4a054; color: #1a140c; font-weight: 700; border: 0; }
+.lab-bar button:disabled { opacity: 0.45; }
+.lab-fill-note { color: #7dae7a; font-weight: 700; }
+.lab-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 5px;
+  padding: 5px;
+  overflow: hidden;
+  grid-auto-rows: 1fr;
+}
+.lab-device {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #16130f;
+  border: 1px solid #3a342c;
+  border-radius: 10px;
+}
+.lab-device header {
+  flex: 0 0 16px;
+  display: flex;
+  justify-content: space-between;
+  padding: 1px 8px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9a9286;
+  border-bottom: 1px solid #3a342c;
+}
+.lab-device iframe {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: #13110e;
+}
+.n1 { grid-template-columns: 1fr; }
+.n2 { grid-template-columns: 1fr 1fr; }
+.n3 { grid-template-columns: 1fr 1fr 1fr; }
+.n4 { grid-template-columns: 1fr 1fr; }
+.n5, .n6 { grid-template-columns: 1fr 1fr 1fr; }
+.n7, .n8 { grid-template-columns: 1fr 1fr 1fr 1fr; }
