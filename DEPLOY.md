@@ -28,11 +28,17 @@ Join links look like: `https://FrostyDog8.github.io/Debater/#/r/ABCD`
 
 ### 3. Supabase
 
-This app reuses the existing WePlay project (`vfqppsvvsdfmlnbzqgta`). Public URL + anon key live in `.env.production` (client-side, same as WePlay).
+This app uses the same Supabase *project* as WePlay, but **its own tables**:
+
+- `debater_rooms` — Debater sessions (primary key `id` = game id; room codes are recyclable)
+- `debater_players` — players in a Debater room
+- `debater_topics` — every suggested topic + `game_id`
+
+Run [`supabase/debater-tables.sql`](supabase/debater-tables.sql) once in the SQL Editor (see [`supabase/README.md`](supabase/README.md)).
 
 Enable **Anonymous** sign-ins so guests can host/join without email.
 
-Realtime must be on for `rooms` and `room_players` (already used by WePlay).
+Realtime must include `debater_rooms` and `debater_players` (the SQL adds them to `supabase_realtime`).
 
 ## Updating the live game
 

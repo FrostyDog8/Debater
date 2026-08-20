@@ -8,8 +8,9 @@ export type Player = {
 
 export type Room = {
   roomCode: string;
+  /** Stable session id (`debater_rooms.id`). Codes can be recycled; this cannot. */
+  gameId: string;
   hostId: PlayerId;
-  gameId: string | null;
   status: 'lobby' | 'playing' | 'paused';
   gameState: unknown | null;
   lobbySettings: unknown | null;

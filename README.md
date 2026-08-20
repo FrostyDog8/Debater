@@ -2,7 +2,7 @@
 
 Standalone party debate game. Phones or PCs in a browser. Talk in the room or on Discord — this site only runs topics, timers, claps, and votes.
 
-This is **not** the WePlay app. It is its own git repo and GitHub Pages site. It talks to the **same Supabase project** WePlay already uses.
+This is **not** the WePlay app. It is its own git repo and GitHub Pages site. It talks to the **same Supabase project** WePlay already uses, but stores Debater data in **`debater_rooms` / `debater_players` / `debater_topics`** (not WePlay’s `rooms` tables). See [`supabase/README.md`](supabase/README.md).
 
 Live (after you push): `https://FrostyDog8.github.io/Debater/`
 

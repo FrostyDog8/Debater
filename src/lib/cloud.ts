@@ -1,5 +1,4 @@
 import type { RealtimeChannel } from '@supabase/supabase-js';
-import { GAME_ID } from './engine';
 import { randomRoomCode, type Player, type Room } from './session';
 import { supabase } from './supabase';
 
@@ -15,106 +14,138 @@ export function isLobbyNotFoundError(e: unknown): boolean {
 }
 
 type RoomRow = {
-  code: string;
+  id: string;
+  room_code: string;
   host_user_id: string;
+  status: string | null;
+  game_state: unknown | null;
+  lobby_settings: unknown | null;
+  is_active: boolean;
   created_at: string;
-  game_id?: string | null;
-  status?: string | null;
-  game_state?: unknown | null;
-  lobby_settings?: unknown | null;
+  ended_at: string | null;
 };
 
 type PlayerRow = {
-  room_code: string;
+  room_id: string;
   user_id: string;
   name: string;
   is_ready: boolean;
   joined_at: string;
 };
 
-function settingsFromGameState(raw: unknown): unknown | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  return (raw as { lobbySettings?: unknown }).lobbySettings ?? null;
-}
-
 function roomFromRows(room: RoomRow, players: PlayerRow[]): Room {
   const mapped: Player[] = players
     .sort((a, b) => a.joined_at.localeCompare(b.joined_at))
     .map((p) => ({ id: p.user_id, name: p.name, isReady: !!p.is_ready }));
   return {
-    roomCode: room.code,
+    roomCode: room.room_code,
+    gameId: room.id,
     hostId: room.host_user_id,
-    gameId: room.game_id ?? null,
     status: room.status === 'playing' ? 'playing' : room.status === 'paused' ? 'paused' : 'lobby',
     gameState: room.game_state ?? null,
-    lobbySettings: room.lobby_settings ?? settingsFromGameState(room.game_state),
+    lobbySettings: room.lobby_settings ?? null,
     players: mapped,
   };
 }
 
 function isMissingRpc(error: { message?: string; code?: string }): boolean {
   const msg = String(error.message ?? '').toLowerCase();
-  return (error.code === 'PGRST202' || msg.includes('could not find the function')) && true;
+  return error.code === 'PGRST202' || msg.includes('could not find the function');
+}
+
+async function fetchActiveRoomRow(roomCode: string): Promise<RoomRow> {
+  const code = roomCode.trim().toUpperCase();
+  const { data, error } = await supabase
+    .from('debater_rooms')
+    .select('*')
+    .eq('room_code', code)
+    .eq('is_active', true)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new LobbyNotFoundError();
+  return data as RoomRow;
 }
 
 export async function cloudCreateRoom(params: { hostUserId: string; hostName: string }): Promise<string> {
-  const code = randomRoomCode();
   const nowIso = new Date().toISOString();
-  const { error: roomErr } = await supabase.from('rooms').insert({
-    code,
-    host_user_id: params.hostUserId,
-    created_at: nowIso,
-    game_id: GAME_ID,
-    status: 'lobby',
-  });
-  if (roomErr) throw roomErr;
-  const { error: playerErr } = await supabase.from('room_players').insert({
-    room_code: code,
-    user_id: params.hostUserId,
-    name: params.hostName.trim() || 'Host',
-    is_ready: true,
-    joined_at: nowIso,
-  } satisfies PlayerRow);
-  if (playerErr) throw playerErr;
-  return code;
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const code = randomRoomCode();
+    const { data: room, error: roomErr } = await supabase
+      .from('debater_rooms')
+      .insert({
+        room_code: code,
+        host_user_id: params.hostUserId,
+        status: 'lobby',
+        is_active: true,
+        lobby_settings: null,
+        game_state: null,
+      })
+      .select('*')
+      .single();
+
+    if (roomErr) {
+      lastError = roomErr;
+      // Unique violation on active room_code — try another code.
+      if (roomErr.code === '23505') continue;
+      throw roomErr;
+    }
+
+    const row = room as RoomRow;
+    const { error: playerErr } = await supabase.from('debater_players').insert({
+      room_id: row.id,
+      user_id: params.hostUserId,
+      name: params.hostName.trim() || 'Host',
+      is_ready: true,
+      joined_at: nowIso,
+    });
+    if (playerErr) {
+      await supabase.from('debater_rooms').delete().eq('id', row.id);
+      throw playerErr;
+    }
+    return row.room_code;
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Could not allocate a room code');
 }
 
 export async function cloudJoinRoom(params: { roomCode: string; userId: string; name: string }) {
-  const code = params.roomCode.trim().toUpperCase();
-  const { data: room, error: roomErr } = await supabase.from('rooms').select('*').eq('code', code).maybeSingle();
-  if (roomErr) throw roomErr;
-  if (!room) throw new LobbyNotFoundError();
-  if (room.game_id && room.game_id !== GAME_ID) {
-    throw new Error('That room is running a different game.');
-  }
-  const { error } = await supabase.from('room_players').upsert(
+  const room = await fetchActiveRoomRow(params.roomCode);
+  const { error } = await supabase.from('debater_players').upsert(
     {
-      room_code: code,
+      room_id: room.id,
       user_id: params.userId,
       name: params.name.trim() || 'Player',
       is_ready: false,
       joined_at: new Date().toISOString(),
     },
-    { onConflict: 'room_code,user_id' },
+    { onConflict: 'room_id,user_id' },
   );
   if (error) throw error;
 }
 
 export async function cloudLeaveRoom(params: { roomCode: string; userId: string }) {
-  const code = params.roomCode.trim().toUpperCase();
-  const { data: room } = await supabase.from('rooms').select('host_user_id').eq('code', code).maybeSingle();
-  if (!room) return;
-  await supabase.from('room_players').delete().eq('room_code', code).eq('user_id', params.userId);
+  let room: RoomRow;
+  try {
+    room = await fetchActiveRoomRow(params.roomCode);
+  } catch (e) {
+    if (isLobbyNotFoundError(e)) return;
+    throw e;
+  }
+
+  await supabase.from('debater_players').delete().eq('room_id', room.id).eq('user_id', params.userId);
   if (room.host_user_id === params.userId) {
-    await cloudDeleteRoom({ roomCode: code, hostUserId: params.userId });
+    await cloudDeleteRoom({ roomCode: room.room_code, hostUserId: params.userId });
   }
 }
 
 export async function cloudSetReady(params: { roomCode: string; userId: string; isReady: boolean }) {
+  const room = await fetchActiveRoomRow(params.roomCode);
   const { error } = await supabase
-    .from('room_players')
+    .from('debater_players')
     .update({ is_ready: params.isReady })
-    .eq('room_code', params.roomCode.trim().toUpperCase())
+    .eq('room_id', room.id)
     .eq('user_id', params.userId);
   if (error) throw error;
 }
@@ -122,126 +153,145 @@ export async function cloudSetReady(params: { roomCode: string; userId: string; 
 export async function cloudRename(params: { roomCode: string; userId: string; name: string }) {
   const trimmed = params.name.trim();
   if (!trimmed) return;
+  const room = await fetchActiveRoomRow(params.roomCode);
   const { error } = await supabase
-    .from('room_players')
+    .from('debater_players')
     .update({ name: trimmed })
-    .eq('room_code', params.roomCode.trim().toUpperCase())
+    .eq('room_id', room.id)
     .eq('user_id', params.userId);
   if (error) throw error;
 }
 
 export async function cloudDeleteRoom(params: { roomCode: string; hostUserId: string }) {
   const code = params.roomCode.trim().toUpperCase();
-  const { error: rpcErr } = await supabase.rpc('close_room', { p_room_code: code });
+  const { error: rpcErr } = await supabase.rpc('close_debater_room', { p_room_code: code });
   if (!rpcErr) return;
   if (!isMissingRpc(rpcErr)) throw rpcErr;
-  const { error } = await supabase.from('rooms').delete().eq('code', code).eq('host_user_id', params.hostUserId);
+
+  const room = await fetchActiveRoomRow(code).catch((e) => {
+    if (isLobbyNotFoundError(e)) return null;
+    throw e;
+  });
+  if (!room) return;
+  if (room.host_user_id !== params.hostUserId) throw new Error('Only the host can close this room');
+
+  await supabase.from('debater_players').delete().eq('room_id', room.id);
+  const { error } = await supabase
+    .from('debater_rooms')
+    .update({ is_active: false, status: 'ended', ended_at: new Date().toISOString() })
+    .eq('id', room.id)
+    .eq('host_user_id', params.hostUserId);
   if (error) throw error;
 }
 
 export async function cloudKickPlayer(params: { roomCode: string; hostUserId: string; targetUserId: string }) {
-  const code = params.roomCode.trim().toUpperCase();
-  const { error: rpcErr } = await supabase.rpc('kick_player', {
-    p_room_code: code,
-    p_target_user_id: params.targetUserId,
-  });
-  if (!rpcErr) return;
-  if (!isMissingRpc(rpcErr)) throw rpcErr;
-  const { error } = await supabase.from('room_players').delete().eq('room_code', code).eq('user_id', params.targetUserId);
+  const room = await fetchActiveRoomRow(params.roomCode);
+  if (room.host_user_id !== params.hostUserId) throw new Error('Only the host can kick players');
+  const { error } = await supabase
+    .from('debater_players')
+    .delete()
+    .eq('room_id', room.id)
+    .eq('user_id', params.targetUserId);
   if (error) throw error;
 }
 
 export async function cloudPatchLobbySettings(params: { roomCode: string; hostUserId: string; settings: unknown }) {
-  const code = params.roomCode.trim().toUpperCase();
-  const settings = params.settings;
-
-  const { error: rpcErr } = await supabase.rpc('patch_room_lobby_settings', {
-    p_room_code: code,
-    p_settings: settings,
-  });
-  if (!rpcErr) return;
-  if (!isMissingRpc(rpcErr)) throw rpcErr;
+  const room = await fetchActiveRoomRow(params.roomCode);
+  if (room.host_user_id !== params.hostUserId) throw new Error('Only the host can change lobby settings');
+  if (room.status !== 'lobby') return;
 
   const { data, error } = await supabase
-    .from('rooms')
-    .update({ lobby_settings: settings })
-    .eq('code', code)
+    .from('debater_rooms')
+    .update({ lobby_settings: params.settings })
+    .eq('id', room.id)
     .eq('host_user_id', params.hostUserId)
     .eq('status', 'lobby')
-    .select('code');
-  if (!error && data?.length) return;
-  const missingCol =
-    !!error && (error.code === 'PGRST204' || String(error.message ?? '').toLowerCase().includes('lobby_settings'));
-  if (error && !missingCol) throw error;
-
-  const { data: row, error: readErr } = await supabase.from('rooms').select('game_state').eq('code', code).maybeSingle();
-  if (readErr) throw readErr;
-  const prev =
-    row?.game_state && typeof row.game_state === 'object' && !Array.isArray(row.game_state)
-      ? (row.game_state as Record<string, unknown>)
-      : {};
-  const { data: saved, error: gsErr } = await supabase
-    .from('rooms')
-    .update({ game_state: { ...prev, lobbySettings: settings } })
-    .eq('code', code)
-    .eq('host_user_id', params.hostUserId)
-    .eq('status', 'lobby')
-    .select('code');
-  if (gsErr) throw gsErr;
-  if (!saved?.length) throw new Error('Could not save lobby settings');
+    .select('id');
+  if (error) throw error;
+  if (!data?.length) throw new Error('Could not save lobby settings');
 }
 
 export async function cloudStartGame(params: { roomCode: string; hostUserId: string; gameState: unknown }) {
-  const code = params.roomCode.trim().toUpperCase();
-  const { error: rpcErr } = await supabase.rpc('start_room_game', {
-    p_room_code: code,
-    p_game_state: params.gameState,
-  });
-  if (!rpcErr) return;
-  if (!isMissingRpc(rpcErr)) throw rpcErr;
+  const room = await fetchActiveRoomRow(params.roomCode);
+  if (room.host_user_id !== params.hostUserId) throw new Error('Only the host can start the game');
   const { error } = await supabase
-    .from('rooms')
-    .update({ status: 'playing', game_id: GAME_ID, game_state: params.gameState })
-    .eq('code', code)
+    .from('debater_rooms')
+    .update({ status: 'playing', game_state: params.gameState })
+    .eq('id', room.id)
     .eq('host_user_id', params.hostUserId);
   if (error) throw error;
 }
 
 export async function cloudPatchGameState(params: { roomCode: string; patch: unknown; replace?: boolean }) {
-  const { error } = await supabase.rpc('patch_room_game_state', {
-    p_room_code: params.roomCode.trim().toUpperCase(),
+  const code = params.roomCode.trim().toUpperCase();
+  const { error: rpcErr } = await supabase.rpc('patch_debater_game_state', {
+    p_room_code: code,
     p_patch: params.patch,
     p_replace: !!params.replace,
   });
+  if (!rpcErr) return;
+  if (!isMissingRpc(rpcErr)) throw rpcErr;
+
+  // Fallback if RPC is missing: client-side shallow merge (racy but workable).
+  const room = await fetchActiveRoomRow(code);
+  const prev =
+    room.game_state && typeof room.game_state === 'object' && !Array.isArray(room.game_state)
+      ? (room.game_state as Record<string, unknown>)
+      : {};
+  const patch =
+    params.patch && typeof params.patch === 'object' && !Array.isArray(params.patch)
+      ? (params.patch as Record<string, unknown>)
+      : {};
+  const next = params.replace ? patch : { ...prev, ...patch };
+  const { error } = await supabase.from('debater_rooms').update({ game_state: next }).eq('id', room.id);
   if (error) throw error;
 }
 
 export async function cloudReturnToLobby(params: { roomCode: string; hostUserId: string; settings?: unknown }) {
-  const code = params.roomCode.trim().toUpperCase();
-  const { error: rpcErr } = await supabase.rpc('return_room_to_lobby', { p_room_code: code });
-  if (rpcErr && !isMissingRpc(rpcErr)) throw rpcErr;
-  if (rpcErr) {
-    await supabase
-      .from('rooms')
-      .update({ status: 'lobby', game_state: params.settings != null ? { lobbySettings: params.settings } : null })
-      .eq('code', code)
-      .eq('host_user_id', params.hostUserId);
-  }
-  if (params.settings != null) {
-    await cloudPatchLobbySettings({ roomCode: code, hostUserId: params.hostUserId, settings: params.settings }).catch(() => {
-      /* broadcast still goes out from the caller */
-    });
-  }
+  const room = await fetchActiveRoomRow(params.roomCode);
+  if (room.host_user_id !== params.hostUserId) throw new Error('Only the host can return to lobby');
+  const { error } = await supabase
+    .from('debater_rooms')
+    .update({
+      status: 'lobby',
+      game_state: null,
+      lobby_settings: params.settings ?? room.lobby_settings,
+    })
+    .eq('id', room.id)
+    .eq('host_user_id', params.hostUserId);
+  if (error) throw error;
 }
 
 export async function cloudFetchRoom(roomCode: string): Promise<Room> {
-  const code = roomCode.trim().toUpperCase();
-  const { data: room, error: roomErr } = await supabase.from('rooms').select('*').eq('code', code).maybeSingle();
-  if (roomErr) throw roomErr;
-  if (!room) throw new LobbyNotFoundError();
-  const { data: players, error: playerErr } = await supabase.from('room_players').select('*').eq('room_code', code);
+  const room = await fetchActiveRoomRow(roomCode);
+  const { data: players, error: playerErr } = await supabase
+    .from('debater_players')
+    .select('*')
+    .eq('room_id', room.id);
   if (playerErr) throw playerErr;
-  return roomFromRows(room as RoomRow, (players ?? []) as PlayerRow[]);
+  return roomFromRows(room, (players ?? []) as PlayerRow[]);
+}
+
+/** Persist a player-suggested topic for analytics / history (game_id = debater_rooms.id). */
+export async function cloudRecordTopic(params: {
+  gameId: string;
+  roomCode: string;
+  topic: string;
+  stanceA: string;
+  stanceB: string;
+  suggestedBy: string;
+  suggestedByName?: string;
+}) {
+  const { error } = await supabase.from('debater_topics').insert({
+    game_id: params.gameId,
+    room_code: params.roomCode.trim().toUpperCase(),
+    topic: params.topic.trim(),
+    stance_a: params.stanceA.trim(),
+    stance_b: params.stanceB.trim(),
+    suggested_by: params.suggestedBy,
+    suggested_by_name: params.suggestedByName?.trim() || null,
+  });
+  if (error) throw error;
 }
 
 export function cloudSubscribeRoom(params: {
@@ -277,13 +327,16 @@ export function cloudSubscribeRoom(params: {
 
   void refresh();
   channel = supabase
-    .channel(`room:${code}`, { config: { broadcast: { ack: true } } })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'room_players', filter: `room_code=eq.${code}` }, () =>
+    .channel(`debater:${code}`, { config: { broadcast: { ack: true } } })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'debater_players' }, () => {
+      void refresh();
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'debater_rooms', filter: `room_code=eq.${code}` }, () =>
       refresh(),
     )
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `code=eq.${code}` }, () => refresh())
-    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'rooms', filter: `code=eq.${code}` }, () => {
-      if (!cancelled) params.onRoomClosed();
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'debater_rooms', filter: `room_code=eq.${code}` }, (payload) => {
+      const next = payload.new as { is_active?: boolean } | null;
+      if (next && next.is_active === false && !cancelled) params.onRoomClosed();
     })
     .on('broadcast', { event: 'lobby-settings' }, (e) => {
       if (cancelled) return;
@@ -301,7 +354,6 @@ export function cloudSubscribeRoom(params: {
       }
     });
 
-  // Fallback polling keeps clients synced even if realtime events are dropped.
   refreshTimer = window.setInterval(() => {
     if (!cancelled) void refresh();
   }, 1500);

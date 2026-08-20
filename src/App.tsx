@@ -29,6 +29,7 @@ import {
   cloudSetReady,
   cloudStartGame,
   cloudSubscribeRoom,
+  cloudRecordTopic,
   isLobbyNotFoundError,
   playerInputKey,
   type GamePayload,
@@ -124,6 +125,17 @@ export function App() {
       }
       if (data && 'topic' in data && typeof data.topic === 'string') {
         if (currentPhase !== 'collect_packs' && currentPhase !== 'collect_final_topics') return;
+        void cloudRecordTopic({
+          gameId: r.gameId,
+          roomCode: r.roomCode,
+          topic: data.topic,
+          stanceA: data.stanceA,
+          stanceB: data.stanceB,
+          suggestedBy: uid,
+          suggestedByName: r.players.find((p) => p.id === uid)?.name,
+        }).catch(() => {
+          /* topic archive should not block play */
+        });
         void cloudPatchGameState({
           roomCode: r.roomCode,
           patch: { [playerInputKey(uid)]: { pack: { topic: data.topic, stanceA: data.stanceA, stanceB: data.stanceB } } },
@@ -481,6 +493,19 @@ export function App() {
       error={error}
       now={now}
       onInput={(next) => {
+        if (next.pack && room.gameId) {
+          void cloudRecordTopic({
+            gameId: room.gameId,
+            roomCode: room.roomCode,
+            topic: next.pack.topic,
+            stanceA: next.pack.stanceA,
+            stanceB: next.pack.stanceB,
+            suggestedBy: user.id,
+            suggestedByName: room.players.find((p) => p.id === user.id)?.name ?? name,
+          }).catch(() => {
+            /* topic archive should not block play */
+          });
+        }
         void cloudPatchGameState({
           roomCode: room.roomCode,
           patch: { [playerInputKey(user.id)]: next },
