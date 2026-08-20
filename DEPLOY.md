@@ -62,3 +62,9 @@ Local changes do not hit the live site until you push.
 ## Ads
 
 Deferred for v1. The live site does not show AdSense or ad placeholders on home, lobby, or debate. Do not add AdSense env vars on Pages until ads ship.
+
+## Google Analytics (optional)
+
+1. Create a GA4 property and copy the Measurement ID (`G-…`).
+2. Repo **Settings → Secrets and variables → Actions**: add secret `VITE_GA_MEASUREMENT_ID`.
+3. Redeploy (push or re-run the Pages workflow). Locally you can also set it in `.env`.

@@ -36,6 +36,10 @@ See [DEPLOY.md](DEPLOY.md). Or run `.\update-github.ps1` after the remote exists
 - Listeners split 11 votes; claps during the speech are 1/20 vote each (2s cooldown).
 - Cutoff ties: both stay. Final ties: replay the final including a new topic.
 
+## Google Analytics (optional)
+
+Set `VITE_GA_MEASUREMENT_ID=G-XXXXXXXXXX` in `.env` (local) and in GitHub Actions secrets / Pages build env for production. The app loads GA4 only when that id is present.
+
 ## Ads
 
 Deferred. v1 ships without AdSense or ad placeholders on home, lobby, or play. Wire ads later.

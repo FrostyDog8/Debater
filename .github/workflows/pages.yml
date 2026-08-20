@@ -31,6 +31,7 @@ jobs:
       - run: npm run build
         env:
           VITE_BASE: /Debater/
+          VITE_GA_MEASUREMENT_ID: ${{ secrets.VITE_GA_MEASUREMENT_ID }}
       - uses: actions/configure-pages@v5
         with:
           enablement: true

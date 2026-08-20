@@ -8,16 +8,27 @@ import {
   currentMatch,
   currentPack,
   beginFinalTopicCollection,
+  hostContinue,
+  hostPause,
+  hostSkipDebate,
+  hostUnpause,
+  isPaused,
   listenerPacks,
   lowestDrop,
   matchPoints,
+  packProgress,
   parseSettings,
+  playersNeedingPack,
+  skipRestOfRound,
   stageFor,
   submitSplit,
   tickClock,
+  unusedPacks,
   VOTE_POINTS,
   SCORE_SCALE,
   listenersOf,
+  formatPoints,
+  resolveSplit,
 } from './engine';
 
 function rng(seed = 1): () => number {
@@ -84,6 +95,16 @@ describe('pairings', () => {
     }
     for (const id of ids) expect(count[id]).toBe(2);
   });
+
+  it('shuffles seat order so pairings are not fixed by player id sort', () => {
+    const ids = ['a', 'b', 'c', 'd'];
+    const orders = new Set<string>();
+    for (let seed = 0; seed < 40; seed++) {
+      const e = beginPairedStage(fillPacks(ids, rng(seed)), rng(seed));
+      orders.add(e.matches.map((m) => `${m.aId}-${m.bId}`).join('|'));
+    }
+    expect(orders.size).toBeGreaterThan(1);
+  });
 });
 
 describe('lowestDrop', () => {
@@ -141,6 +162,23 @@ describe('scoring', () => {
     const pts = matchPoints(e, ids);
     expect(pts.a).toBe(listeners.length * 6 * SCORE_SCALE + listeners.length * SCORE_SCALE);
   });
+
+  it('formats scaled units without showing ×10 raw scores', () => {
+    expect(formatPoints(50)).toBe('5');
+    expect(formatPoints(55)).toBe('5.5');
+  });
+
+  it('appends match history on resolveSplit', () => {
+    const ids = ['a', 'b', 'c'];
+    let e = beginPairedStage(fillPacks(ids, rng(1)), rng(1));
+    e = { ...e, phase: 'split_vote', roundIndex: 0 };
+    const voter = listenersOf(e, ids)[0]!;
+    e = submitSplit(e, voter, 7, ids);
+    e = resolveSplit(e, ids);
+    expect(e.matchHistory).toHaveLength(1);
+    expect(e.matchHistory[0]!.pointsA).toBe(7 * SCORE_SCALE);
+    expect(formatPoints(e.matchHistory[0]!.pointsA)).toBe('7');
+  });
 });
 
 describe('clock', () => {
@@ -193,6 +231,88 @@ describe('clock leftovers', () => {
     e = tickClock(e, 2);
     expect(e.phase).toBe('split_vote');
     expect(e.splitA).toEqual({});
+  });
+});
+
+describe('round topic leftovers', () => {
+  it('keeps unused topics after a cut and asks every room player for topics', () => {
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f'];
+    let e = fillPacks(ids, rng(11));
+    const byAuthor = Object.fromEntries(e.packPool.map((p) => [p.authorId, p.id]));
+    // Three matches consumed d/e/f packs; a/b/c leftovers remain for survivors.
+    e = {
+      ...e,
+      phase: 'match_result',
+      stageKind: 'n6',
+      usedPackIds: [byAuthor.d!, byAuthor.e!, byAuthor.f!],
+      matches: [
+        { aId: 'a', bId: 'b', packId: byAuthor.d!, swapStances: false, leftoverBonus: false },
+        { aId: 'c', bId: 'd', packId: byAuthor.e!, swapStances: false, leftoverBonus: false },
+        { aId: 'e', bId: 'f', packId: byAuthor.f!, swapStances: false, leftoverBonus: false },
+      ],
+      matchIndex: 2,
+      leftoverPending: false,
+      leftoverId: null,
+      scores: { a: 50, b: 40, c: 30, d: 20, e: 5, f: 1 },
+      lastDraw: false,
+    };
+    e = hostContinue(e, ids);
+    expect(e.phase).toBe('collect_packs');
+    expect(e.activeIds).toEqual(['a', 'b', 'c', 'd']);
+    // Leftover unused packs stay available (a/b/c still have unused topics).
+    expect(unusedPacks(e).map((p) => p.authorId).sort()).toEqual(['a', 'b', 'c']);
+    // Everyone in the room is asked; a/b/c already have unused packs.
+    expect(packProgress(e, ids)).toEqual({ have: 3, need: 6 });
+    expect(playersNeedingPack(e, ids).sort()).toEqual(['d', 'e', 'f']);
+  });
+
+  it('marks every topic used only when entering finals', () => {
+    const ids = ['a', 'b', 'c'];
+    let e = beginPairedStage(fillPacks(ids, rng(4)), rng(4));
+    const poolIds = e.packPool.map((p) => p.id);
+    e = beginFinalTopicCollection({ ...e, activeIds: ['a', 'b'] });
+    expect(e.usedPackIds.sort()).toEqual(poolIds.sort());
+    expect(unusedPacks(e)).toEqual([]);
+  });
+});
+
+describe('host pause and skip', () => {
+  it('pauses and resumes the debate timer', () => {
+    const ids = ['a', 'b', 'c'];
+    let e = beginPairedStage(fillPacks(ids, rng(8)), rng(8));
+    e = tickClock(e, (e.phaseEndsAtMs ?? 0) + 1);
+    expect(e.phase).toBe('debate');
+    const ends = e.phaseEndsAtMs!;
+    e = hostPause(e, ends - 4000);
+    expect(isPaused(e)).toBe(true);
+    expect(e.pauseRemainingMs).toBe(4000);
+    expect(e.phaseEndsAtMs).toBeNull();
+    e = tickClock(e, ends + 99999);
+    expect(e.phase).toBe('debate');
+    e = hostUnpause(e, 100_000);
+    expect(isPaused(e)).toBe(false);
+    expect(e.phaseEndsAtMs).toBe(104_000);
+  });
+
+  it('skips prep/debate straight into voting', () => {
+    const ids = ['a', 'b', 'c'];
+    let e = beginPairedStage(fillPacks(ids, rng(3)), rng(3));
+    e = hostSkipDebate(e);
+    expect(e.phase).toBe('split_vote');
+    expect(e.phaseEndsAtMs).toBeNull();
+    expect(e.pauseRemainingMs).toBeNull();
+    expect(e.hostNotice).toBe('Host skipped to voting');
+  });
+
+  it('fast-forwards the rest of a round to the final match result', () => {
+    const ids = ['a', 'b', 'c', 'd'];
+    let e = beginPairedStage(fillPacks(ids, rng(7)), rng(7));
+    expect(e.phase).toBe('prep');
+    expect(e.matches.length).toBeGreaterThan(1);
+    e = skipRestOfRound(e, ids, rng(7));
+    expect(e.phase).toBe('match_result');
+    expect(e.matchIndex).toBe(e.matches.length - 1);
+    expect(e.leftoverPending).toBe(false);
   });
 });
 

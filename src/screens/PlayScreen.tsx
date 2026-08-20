@@ -7,7 +7,9 @@ import {
   currentDebaters,
   currentMatch,
   currentPack,
+  eliminationsThisStage,
   formatPoints,
+  isPaused,
   listenerPacks,
   listenersOf,
   packProgress,
@@ -15,6 +17,8 @@ import {
   peekNextMatch,
   splitVoteProgress,
   hasUnusedPack,
+  expectedPackAuthors,
+  submittedPackAuthors,
   stancesFor,
   turnLabel,
   whoseTurn,
@@ -33,6 +37,8 @@ type Props = {
   now: number;
   onInput(next: PlayerInput): void;
   onHostContinue(): void;
+  onHostPause(): void;
+  onHostSkip(): void;
   onLeave(): void;
   onPlayAgain(): void;
 };
@@ -41,9 +47,15 @@ function nameOf(room: Room, id: string): string {
   return room.players.find((p) => p.id === id)?.name ?? id.slice(0, 6);
 }
 
-function remaining(ends: number | null, now: number): string {
-  if (ends == null) return '';
-  const s = Math.max(0, Math.ceil((ends - now) / 1000));
+function remainingSeconds(ends: number | null, now: number, pausedMs: number | null = null): number | null {
+  if (pausedMs != null) return Math.max(0, Math.ceil(pausedMs / 1000));
+  if (ends == null) return null;
+  return Math.max(0, Math.ceil((ends - now) / 1000));
+}
+
+function remaining(ends: number | null, now: number, pausedMs: number | null = null): string {
+  const s = remainingSeconds(ends, now, pausedMs);
+  if (s == null) return '';
   const m = Math.floor(s / 60);
   const r = s % 60;
   return `${m}:${r.toString().padStart(2, '0')}`;
@@ -62,6 +74,8 @@ export function PlayScreen({
   now,
   onInput,
   onHostContinue,
+  onHostPause,
+  onHostSkip,
   onLeave,
   onPlayAgain,
 }: Props) {
@@ -92,10 +106,20 @@ export function PlayScreen({
   const clapTotal = clapsA + clapsB;
   const turnWho = whoseTurn(engine);
   const turnText = turnLabel(engine);
+  const paused = isPaused(engine);
   const voteProgress = splitVoteProgress(engine, ids);
   const finalTopicVoters = ids.filter((id) => !engine.activeIds.includes(id));
   const finalTopicVotesIn = finalTopicVoters.filter((id) => !!engine.topicVotes[id]).length;
   const allFinalTopicVotesIn = allTopicVotesIn(engine, ids);
+  const waitingTopicIds = expectedPackAuthors(engine, ids).filter(
+    (id) => !submittedPackAuthors(engine, ids).includes(id),
+  );
+  const dropCount = eliminationsThisStage(engine.stageKind);
+  const showDangerChip =
+    dropCount > 0 &&
+    (engine.phase === 'prep' || engine.phase === 'debate' || engine.phase === 'split_vote');
+  const secsLeft = remainingSeconds(engine.phaseEndsAtMs, now, engine.pauseRemainingMs);
+  const timerUrgent = engine.phase === 'debate' && !paused && secsLeft != null && secsLeft <= 10;
 
   const sendPack = () => {
     if (!packValid) return;
@@ -106,7 +130,7 @@ export function PlayScreen({
   };
 
   const clapSide = (side: 'A' | 'B') => {
-    if (clapLocked || !isListener) return;
+    if (paused || clapLocked || !isListener) return;
     setLocalClapAt(now);
     onInput({
       ...input,
@@ -130,6 +154,11 @@ export function PlayScreen({
             <p className="pack-count">
               Topics in {progress.have} / {progress.need || '—'}
             </p>
+            {!packsReady && waitingTopicIds.length > 0 ? (
+              <p className="waiting-list">
+                Waiting on: {waitingTopicIds.map((id) => nameOf(room, id)).join(', ')}
+              </p>
+            ) : null}
             {engine.phase === 'collect_final_topics' && engine.activeIds.includes(selfId) ? (
               <p>You are in the final. Wait for listeners to pick a new topic.</p>
             ) : packIn ? (
@@ -167,8 +196,9 @@ export function PlayScreen({
             <p className="vote-progress">
               Votes in {finalTopicVotesIn} / {finalTopicVoters.length || '—'}
             </p>
-            {engine.activeIds.includes(selfId) ? <p>Finalists do not vote.</p> : null}
-            {isListener ? (
+            {engine.activeIds.includes(selfId) ? (
+              <p className="finalist-wait">You are a finalist. Wait while the listeners choose the finals topic.</p>
+            ) : (
               <div className="topic-list">
                 {listenerPacks(engine).map((p) => (
                   <button
@@ -181,7 +211,7 @@ export function PlayScreen({
                   </button>
                 ))}
               </div>
-            ) : null}
+            )}
             {host ? (
               <div className="dock" style={{ marginTop: 'auto', paddingTop: 8 }}>
                 <button className="btn" disabled={!allFinalTopicVotesIn} onClick={onHostContinue}>
@@ -194,8 +224,13 @@ export function PlayScreen({
 
         {match && stances && pack && (engine.phase === 'prep' || engine.phase === 'debate' || engine.phase === 'split_vote') && (
           <div className="debate-arena">
+            {paused ? <p className="host-status-banner pause">Paused by host</p> : null}
+            {showDangerChip ? (
+              <p className="danger-chip">Lowest {dropCount} eliminated this round</p>
+            ) : null}
             {engine.phase === 'debate' ? <ClapBursts bursts={bursts} className="clap-space clap-rail clap-rail-top" rail="top" /> : null}
             <h2 className="topic">{pack.topic}</h2>
+            {engine.phase === 'prep' ? <p className="prep-banner">Preparation</p> : null}
             {engine.phase === 'debate' ? (
               <p className="turn-callout">
                 {turnWho ? (
@@ -219,7 +254,7 @@ export function PlayScreen({
                     <p className="stance">{stances.a}</p>
                   </div>
                   {engine.phase === 'debate' && isListener ? (
-                    <ClapButton locked={clapLocked} lastClapAt={clapAt} side="A" onClap={() => clapSide('A')} />
+                    <ClapButton locked={paused || clapLocked} lastClapAt={clapAt} side="A" onClap={() => clapSide('A')} />
                   ) : null}
                 </div>
                 <div className="debater-col">
@@ -228,7 +263,7 @@ export function PlayScreen({
                     <p className="stance">{stances.b}</p>
                   </div>
                   {engine.phase === 'debate' && isListener ? (
-                    <ClapButton locked={clapLocked} lastClapAt={clapAt} side="B" onClap={() => clapSide('B')} />
+                    <ClapButton locked={paused || clapLocked} lastClapAt={clapAt} side="B" onClap={() => clapSide('B')} />
                   ) : null}
                 </div>
               </div>
@@ -240,7 +275,23 @@ export function PlayScreen({
               </div>
             ) : null}
             {engine.phase === 'debate' ? <ClapBursts bursts={bursts} className="clap-space clap-rail clap-rail-bottom" rail="bottom" /> : null}
-            {engine.phaseEndsAtMs ? <div className="timer">{remaining(engine.phaseEndsAtMs, now)}</div> : null}
+            {engine.phaseEndsAtMs || paused ? (
+              <div className={`timer${paused ? ' paused' : ''}${timerUrgent ? ' urgent' : ''}`}>
+                {remaining(engine.phaseEndsAtMs, now, engine.pauseRemainingMs)}
+                {paused ? <span className="paused-tag">Paused</span> : null}
+                {timerUrgent ? <span className="urgent-tag">Hurry</span> : null}
+              </div>
+            ) : null}
+            {host && (engine.phase === 'prep' || engine.phase === 'debate') ? (
+              <div className="host-timer-controls">
+                <button className="btn ghost tiny" onClick={onHostPause}>
+                  {paused ? 'Unpause' : 'Pause'}
+                </button>
+                <button className="btn ghost tiny" onClick={onHostSkip}>
+                  Skip to vote
+                </button>
+              </div>
+            ) : null}
             {engine.phase === 'debate' ? (
               <p className="turn-indicator">
                 {turnWho ? (
@@ -258,6 +309,7 @@ export function PlayScreen({
 
         {engine.phase === 'split_vote' && (
           <>
+            {engine.hostNotice ? <p className="host-status-banner skip">{engine.hostNotice}</p> : null}
             <p className="vote-progress">
               Votes in {voteProgress.have} / {voteProgress.need || '—'}
             </p>
@@ -286,7 +338,17 @@ export function PlayScreen({
               <span> · </span>
               {nameOf(room, match.bId)} {formatPoints(engine.lastPointsB)}
             </p>
-            <Scoreboard room={room} engine={engine} showScores highlightOutcome={!upcoming && engine.stageKind !== 'final'} />
+            <Scoreboard
+              room={room}
+              engine={engine}
+              showScores
+              highlightOutcome={engine.stageKind !== 'final' && !!upcoming}
+              dangerNote={
+                engine.stageKind !== 'final' && upcoming
+                  ? `Danger zone: lowest ${eliminationsThisStage(engine.stageKind)} will be eliminated this round`
+                  : null
+              }
+            />
             {upcoming ? (
               <p className="next-up">
                 Next up: {nameOf(room, upcoming.aId)} vs {nameOf(room, upcoming.bId)}
@@ -357,18 +419,21 @@ function Scoreboard({
   engine,
   showScores,
   highlightOutcome = false,
+  dangerNote = null,
 }: {
   room: Room;
   engine: Engine;
   showScores: boolean;
   highlightOutcome?: boolean;
+  dangerNote?: string | null;
 }) {
   const rows = [...engine.activeIds].sort((a, b) => (engine.scores[b] ?? 0) - (engine.scores[a] ?? 0));
-  const cutoff = engine.stageKind === 'n3' ? 1 : 2;
+  const cutoff = eliminationsThisStage(engine.stageKind);
   const sortedAsc = [...engine.activeIds].sort((a, b) => (engine.scores[a] ?? 0) - (engine.scores[b] ?? 0) || a.localeCompare(b));
-  const eliminated = highlightOutcome ? new Set(sortedAsc.slice(0, cutoff)) : new Set<string>();
+  const eliminated = highlightOutcome && cutoff > 0 ? new Set(sortedAsc.slice(0, cutoff)) : new Set<string>();
   return (
     <div className="scoreboard">
+      {dangerNote ? <p className="danger-note">{dangerNote}</p> : null}
       {rows.map((id) => (
         <div
           key={id}
@@ -399,25 +464,20 @@ function ChampionPanel({
   const [roundIdx, setRoundIdx] = useState(0);
 
   const rounds = useMemo(() => {
-    const groups: { matchIndex: number; pack: (typeof engine.packPool)[0] | null; match: (typeof engine.matches)[0]; pointsA: number; pointsB: number }[][] = [];
-    let current: typeof groups[0] = [];
-    for (let i = 0; i < engine.matches.length; i++) {
-      const m = engine.matches[i]!;
-      const pack = engine.packPool.find((p) => p.id === m.packId) ?? null;
-      current.push({ matchIndex: i, pack, match: m, pointsA: 0, pointsB: 0 });
-      const nextMatch = engine.matches[i + 1];
-      const sameStage = nextMatch && nextMatch.aId !== m.aId;
-      if (!nextMatch || !sameStage) {
-        groups.push(current);
-        current = [];
-      }
+    const byRound = new Map<number, typeof engine.matchHistory>();
+    for (const entry of engine.matchHistory) {
+      const list = byRound.get(entry.roundIndex) ?? [];
+      list.push(entry);
+      byRound.set(entry.roundIndex, list);
     }
-    if (current.length) groups.push(current);
-    return groups;
-  }, [engine.matches, engine.packPool]);
+    return [...byRound.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, entries]) => entries);
+  }, [engine.matchHistory]);
 
   const roundItems = rounds[roundIdx] ?? [];
   const totalRounds = rounds.length;
+  const roundLabel = roundItems[0]?.stageKind === 'final' ? 'Finals' : `Round ${roundIdx + 1}`;
 
   if (showSummary) {
     return (
@@ -426,7 +486,10 @@ function ChampionPanel({
           <button className="btn ghost tiny" disabled={roundIdx === 0} onClick={() => setRoundIdx((r) => r - 1)}>
             ‹
           </button>
-          <span className="summary-round-label">Round {roundIdx + 1} of {totalRounds}</span>
+          <span className="summary-round-label">
+            {roundLabel}
+            {totalRounds > 1 ? ` · ${roundIdx + 1}/${totalRounds}` : ''}
+          </span>
           <button className="btn ghost tiny" disabled={roundIdx >= totalRounds - 1} onClick={() => setRoundIdx((r) => r + 1)}>
             ›
           </button>
@@ -438,24 +501,28 @@ function ChampionPanel({
                 <th>Topic</th>
                 <th>Suggested by</th>
                 <th>Debaters</th>
+                <th>Score</th>
               </tr>
             </thead>
             <tbody>
-              {roundItems.map(({ match, pack }) => (
-                <tr key={match.packId}>
+              {roundItems.map((entry) => (
+                <tr key={`${entry.roundIndex}-${entry.packId}-${entry.aId}-${entry.bId}`}>
                   <td>
-                    <div className="summary-topic">{pack?.topic ?? '—'}</div>
+                    <div className="summary-topic">{entry.topic || '—'}</div>
                     <div className="summary-stances">
-                      <span className="side-a">{pack?.stanceA ?? ''}</span>
+                      <span className="side-a">{entry.stanceA}</span>
                       {' · '}
-                      <span className="side-b">{pack?.stanceB ?? ''}</span>
+                      <span className="side-b">{entry.stanceB}</span>
                     </div>
                   </td>
-                  <td>{pack ? nameOf(pack.authorId) : '—'}</td>
+                  <td>{entry.authorId ? nameOf(entry.authorId) : '—'}</td>
                   <td>
-                    <span className="side-a">{nameOf(match.aId)}</span>
+                    <span className="side-a">{nameOf(entry.aId)}</span>
                     {' vs '}
-                    <span className="side-b">{nameOf(match.bId)}</span>
+                    <span className="side-b">{nameOf(entry.bId)}</span>
+                  </td>
+                  <td>
+                    {formatPoints(entry.pointsA)} · {formatPoints(entry.pointsB)}
                   </td>
                 </tr>
               ))}
@@ -468,8 +535,11 @@ function ChampionPanel({
             .sort((a, b) => (engine.scores[b] ?? 0) - (engine.scores[a] ?? 0))
             .map((id) => (
               <div key={id} className="summary-score-row">
-                <span>{nameOf(id)}{id === engine.championId ? ' 🏆' : ''}</span>
-                <span>{engine.scores[id] ?? 0}</span>
+                <span>
+                  {nameOf(id)}
+                  {id === engine.championId ? ' 🏆' : ''}
+                </span>
+                <span>{formatPoints(engine.scores[id] ?? 0)}</span>
               </div>
             ))}
         </div>
@@ -482,13 +552,21 @@ function ChampionPanel({
 
   return (
     <div className="champion-board">
-      <div className="trophy-wrap" aria-hidden>
-        <img className="trophy-gif" src={`${import.meta.env.BASE_URL}trophy.svg`} alt="" />
+      <div className="champion-center">
+        <div className="trophy-wrap" aria-hidden>
+          <img className="trophy-gif" src={`${import.meta.env.BASE_URL}trophy.svg`} alt="" />
+        </div>
+        <h2>Champion</h2>
+        <p className="champion-name">{engine.championId ? nameOf(engine.championId) : '—'}</p>
       </div>
-      <h2>Champion</h2>
-      <p className="champion-name">{engine.championId ? nameOf(engine.championId) : '—'}</p>
-      <div className="dock" style={{ marginTop: 'auto', paddingTop: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-        <button className="btn ghost tiny" onClick={() => { setRoundIdx(0); setShowSummary(true); }}>
+      <div className="dock champion-actions">
+        <button
+          className="btn ghost summary-btn"
+          onClick={() => {
+            setRoundIdx(0);
+            setShowSummary(true);
+          }}
+        >
           Game summary
         </button>
         {host ? (
@@ -513,19 +591,44 @@ function SplitPicker({
   bName: string;
 }) {
   const [v, setV] = useState(value);
-  const tie = v === VOTE_POINTS / 2;
+  const pointsA = v;
+  const pointsB = VOTE_POINTS - v;
+  const tie = pointsA === pointsB;
+  // Slider left = more for A (left player), right = more for B.
+  const slider = VOTE_POINTS - v;
   return (
-    <>
-      <p>
-        {aName} {v} · {bName} {VOTE_POINTS - v}
-        {tie ? ' · tie' : ''}
-      </p>
-      <input type="range" min={0} max={VOTE_POINTS} value={v} onChange={(e) => setV(Number(e.target.value))} />
-      <div className="row" style={{ marginTop: 8 }}>
+    <div className="split-picker">
+      <div className="split-preview">
+        <div className="split-preview-side side-a">
+          <span className="split-preview-name">{aName}</span>
+          <span key={`a-${pointsA}`} className="split-preview-points">
+            {pointsA}
+          </span>
+        </div>
+        <div className="split-preview-side side-b">
+          <span className="split-preview-name">{bName}</span>
+          <span key={`b-${pointsB}`} className="split-preview-points">
+            {pointsB}
+          </span>
+        </div>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={VOTE_POINTS}
+        value={slider}
+        onChange={(e) => setV(VOTE_POINTS - Number(e.target.value))}
+        aria-label={`Points for ${aName} vs ${bName}`}
+      />
+      <div className="split-preview-bar" aria-hidden>
+        <span className="m-a" style={{ width: `${(100 * pointsA) / VOTE_POINTS}%` }} />
+        <span className="m-b" style={{ width: `${(100 * pointsB) / VOTE_POINTS}%` }} />
+      </div>
+      <div className="row" style={{ marginTop: 8, justifyContent: 'center' }}>
         <button className="btn" onClick={() => onCommit(v)}>
-          Lock {tie ? 'tie 5–5' : `${v}–${VOTE_POINTS - v}`}
+          Lock {tie ? 'tie 5–5' : `${pointsA}–${pointsB}`}
         </button>
       </div>
-    </>
+    </div>
   );
 }

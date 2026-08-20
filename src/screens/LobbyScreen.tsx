@@ -110,9 +110,9 @@ export function LobbyScreen({
                 ) : (
                   <span className="player-name-line">{p.name}</span>
                 )}
-                <span className="player-meta">
-                  <span className="you-tag">{p.id === selfId ? 'you' : ''}</span>
-                  <span className="host-tag">{p.id === room.hostId ? 'host' : ''}</span>
+                <span className={`player-meta${p.id === selfId && p.id === room.hostId ? ' stacked' : ''}`}>
+                  {p.id === selfId ? <span className="you-tag">you</span> : null}
+                  {p.id === room.hostId ? <span className="host-tag">host</span> : null}
                 </span>
                 {host && p.id !== selfId ? (
                   <button className="btn ghost tiny kick-btn" onClick={() => onKick(p.id)}>

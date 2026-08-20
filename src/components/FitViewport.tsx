@@ -11,22 +11,28 @@ export function FitViewport({ children }: { children: ReactNode }) {
 
     const apply = () => {
       inner.style.transform = 'scale(1)';
-      const next = Math.min(
-        1,
-        outer.clientHeight / Math.max(inner.scrollHeight, 1),
-        outer.clientWidth / Math.max(inner.scrollWidth, 1),
-      );
-      inner.style.transform = `scale(${Number.isFinite(next) && next > 0 ? next : 1})`;
+      inner.style.marginBottom = '0px';
+      // Measure natural content height (not the clipped 100% box).
+      const contentHeight = Math.max(inner.scrollHeight, inner.offsetHeight, 1);
+      const contentWidth = Math.max(inner.scrollWidth, inner.offsetWidth, 1);
+      const next = Math.min(1, outer.clientHeight / contentHeight, outer.clientWidth / contentWidth);
+      const scale = Number.isFinite(next) && next > 0 ? next : 1;
+      inner.style.transform = `scale(${scale})`;
+      // Collapse the unused layout footprint created by CSS transforms.
+      inner.style.marginBottom = `${(scale - 1) * contentHeight}px`;
     };
 
     apply();
     const ro = new ResizeObserver(apply);
     ro.observe(outer);
     ro.observe(inner);
+    const mo = new MutationObserver(apply);
+    mo.observe(inner, { childList: true, subtree: true, characterData: true });
     window.addEventListener('resize', apply);
     window.visualViewport?.addEventListener('resize', apply);
     return () => {
       ro.disconnect();
+      mo.disconnect();
       window.removeEventListener('resize', apply);
       window.visualViewport?.removeEventListener('resize', apply);
     };
