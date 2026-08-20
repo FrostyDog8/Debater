@@ -234,6 +234,7 @@ export async function cloudPatchGameState(params: { roomCode: string; patch: unk
 
   // Fallback if RPC is missing: client-side shallow merge (racy but workable).
   const room = await fetchActiveRoomRow(code);
+  if (room.status !== 'playing') return;
   const prev =
     room.game_state && typeof room.game_state === 'object' && !Array.isArray(room.game_state)
       ? (room.game_state as Record<string, unknown>)
@@ -243,7 +244,11 @@ export async function cloudPatchGameState(params: { roomCode: string; patch: unk
       ? (params.patch as Record<string, unknown>)
       : {};
   const next = params.replace ? patch : { ...prev, ...patch };
-  const { error } = await supabase.from('debater_rooms').update({ game_state: next }).eq('id', room.id);
+  const { error } = await supabase
+    .from('debater_rooms')
+    .update({ game_state: next })
+    .eq('id', room.id)
+    .eq('status', 'playing');
   if (error) throw error;
 }
 
@@ -306,8 +311,9 @@ export function cloudSubscribeRoom(params: {
   onRoomClosed(): void;
   onError(message: string): void;
   onLobbySettings?(settings: unknown): void;
+  onReturnToLobby?(settings: unknown): void;
   onSettingsRequested?(): void;
-}): { unsubscribe(): void; publishLobbySettings(settings: unknown): void } {
+}): { unsubscribe(): void; publishLobbySettings(settings: unknown): void; publishReturnToLobby(settings: unknown): void } {
   const code = params.roomCode.trim().toUpperCase();
   let channel: RealtimeChannel | null = null;
   let refreshTimer: number | null = null;
@@ -349,6 +355,11 @@ export function cloudSubscribeRoom(params: {
       lastLobbySettings = e.payload;
       params.onLobbySettings?.(e.payload);
     })
+    .on('broadcast', { event: 'return-to-lobby' }, (e) => {
+      if (cancelled) return;
+      lastLobbySettings = e.payload;
+      params.onReturnToLobby?.(e.payload);
+    })
     .on('broadcast', { event: 'need-lobby-settings' }, () => {
       if (!cancelled) params.onSettingsRequested?.();
     })
@@ -368,6 +379,10 @@ export function cloudSubscribeRoom(params: {
     publishLobbySettings(settings: unknown) {
       lastLobbySettings = settings;
       void channel?.send({ type: 'broadcast', event: 'lobby-settings', payload: settings });
+    },
+    publishReturnToLobby(settings: unknown) {
+      lastLobbySettings = settings;
+      void channel?.send({ type: 'broadcast', event: 'return-to-lobby', payload: settings ?? {} });
     },
     unsubscribe() {
       cancelled = true;

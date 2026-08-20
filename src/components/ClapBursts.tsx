@@ -59,7 +59,10 @@ export function ClapBursts({
   return (
     <div className={className ?? 'clap-space'} aria-hidden>
       {shown.map((burst) => (
-        <span key={burst.key} className={`clap-burst for-${burst.side === 'A' ? 'a' : 'b'} slot-${burst.slot % 4}`}>
+        <span
+          key={burst.key}
+          className={`clap-burst for-${burst.side === 'A' ? 'a' : 'b'} slot-${burst.slot % 4}${rail === 'bottom' ? ' rail-bottom' : ' rail-top'}`}
+        >
           👏
         </span>
       ))}

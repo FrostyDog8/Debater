@@ -76,6 +76,8 @@ export function App() {
   const attachedCode = useRef('');
   const blockedJoinCode = useRef('');
   const leavingRef = useRef(false);
+  const syncEpoch = useRef(0);
+  const awaitLobbyAck = useRef(false);
   const nameRef = useRef(name);
   hostSettingsRef.current = hostSettings;
   nameRef.current = name;
@@ -186,7 +188,36 @@ export function App() {
             });
             return null;
           }
-          const merged = { ...next, lobbySettings: newerLobbySettings(prev?.lobbySettings, next.lobbySettings) };
+          const merged = {
+            ...next,
+            // Never keep a stale game payload once the room is back in lobby.
+            gameState: next.status === 'lobby' ? null : next.gameState,
+            lobbySettings: newerLobbySettings(prev?.lobbySettings, next.lobbySettings),
+          };
+          if (awaitLobbyAck.current) {
+            if (next.status === 'lobby') {
+              awaitLobbyAck.current = false;
+            } else if (next.status === 'playing') {
+              const enginePhase =
+                next.gameState &&
+                typeof next.gameState === 'object' &&
+                (next.gameState as { engine?: { phase?: string } }).engine?.phase;
+              // Accept only a fresh match (host started again); ignore late champion ticks.
+              if (enginePhase === 'collect_packs' || enginePhase === 'collect_final_topics') {
+                awaitLobbyAck.current = false;
+              } else {
+                const stay = {
+                  ...prev!,
+                  status: 'lobby' as const,
+                  gameState: null,
+                  lobbySettings: newerLobbySettings(prev?.lobbySettings, next.lobbySettings),
+                  players: next.players,
+                };
+                roomRef.current = stay;
+                return stay;
+              }
+            }
+          }
           roomRef.current = merged;
           return merged;
         });
@@ -195,6 +226,25 @@ export function App() {
         setRoom((prev) => {
           if (!prev) return prev;
           const merged = { ...prev, lobbySettings: newerLobbySettings(prev.lobbySettings, raw) };
+          roomRef.current = merged;
+          return merged;
+        });
+      },
+      onReturnToLobby: (raw) => {
+        syncEpoch.current += 1;
+        awaitLobbyAck.current = true;
+        lastHostWrite.current = '';
+        lastPhaseKey.current = '';
+        trackedPhaseKey.current = '';
+        recordedPackIds.current = new Set();
+        setRoom((prev) => {
+          if (!prev) return prev;
+          const merged = {
+            ...prev,
+            status: 'lobby' as const,
+            gameState: null,
+            lobbySettings: newerLobbySettings(prev.lobbySettings, raw),
+          };
           roomRef.current = merged;
           return merged;
         });
@@ -358,6 +408,7 @@ export function App() {
 
   useEffect(() => {
     if (!isHost || !room || room.status !== 'playing' || !parsed) return;
+    const epoch = syncEpoch.current;
     const previousPhase = parsed.engine.phase;
     let next = tickClock(parsed.engine, Date.now());
     if (next.phase === 'split_vote' && previousPhase === 'split_vote' && allSplitsIn(next, ids)) {
@@ -379,21 +430,50 @@ export function App() {
         Object.assign(patch, wipeSplitsKeepClaps(parsed.payload, ids));
       }
     }
-    void cloudPatchGameState({ roomCode: room.roomCode, patch, replace: false }).catch((e) =>
-      setError(String((e as Error).message)),
-    );
+    void cloudPatchGameState({ roomCode: room.roomCode, patch, replace: false })
+      .then(() => {
+        if (epoch !== syncEpoch.current) return;
+      })
+      .catch((e) => {
+        if (epoch !== syncEpoch.current) return;
+        setError(String((e as Error).message));
+      });
   }, [isHost, room, parsed, ids, now]);
 
   useEffect(() => {
-    if (isHost || !room || room.status !== 'playing') return;
+    if (isHost || !room) return;
     const code = room.roomCode;
     const t = window.setInterval(() => {
       void cloudFetchRoom(code)
         .then((fresh) => {
           setRoom((prev) => {
             if (!prev || prev.roomCode !== fresh.roomCode) return prev;
-            if (JSON.stringify(prev.gameState) === JSON.stringify(fresh.gameState) && prev.status === fresh.status) return prev;
-            const merged = { ...fresh, lobbySettings: newerLobbySettings(prev.lobbySettings, fresh.lobbySettings) };
+            if (JSON.stringify(prev.gameState) === JSON.stringify(fresh.gameState) && prev.status === fresh.status) {
+              const lobbySame =
+                JSON.stringify(prev.lobbySettings) === JSON.stringify(fresh.lobbySettings);
+              if (lobbySame) return prev;
+            }
+            let next = fresh;
+            if (awaitLobbyAck.current) {
+              if (fresh.status === 'lobby') {
+                awaitLobbyAck.current = false;
+              } else if (fresh.status === 'playing') {
+                const enginePhase =
+                  fresh.gameState &&
+                  typeof fresh.gameState === 'object' &&
+                  (fresh.gameState as { engine?: { phase?: string } }).engine?.phase;
+                if (enginePhase === 'collect_packs' || enginePhase === 'collect_final_topics') {
+                  awaitLobbyAck.current = false;
+                } else {
+                  next = { ...fresh, status: 'lobby', gameState: null };
+                }
+              }
+            }
+            const merged = {
+              ...next,
+              gameState: next.status === 'lobby' ? null : next.gameState,
+              lobbySettings: newerLobbySettings(prev.lobbySettings, next.lobbySettings),
+            };
             roomRef.current = merged;
             return merged;
           });
@@ -403,7 +483,7 @@ export function App() {
         });
     }, 900);
     return () => window.clearInterval(t);
-  }, [isHost, room?.roomCode, room?.status]);
+  }, [isHost, room?.roomCode]);
 
   useEffect(() => {
     if (!room || room.status !== 'playing' || !parsed) {
@@ -648,10 +728,33 @@ export function App() {
       }}
       onPlayAgain={async () => {
         trackEvent('play_again', { ...roomParams(room), topic_count: engine.packPool.length });
+        syncEpoch.current += 1;
+        awaitLobbyAck.current = true;
         recordedPackIds.current = new Set();
+        lastHostWrite.current = '';
+        lastPhaseKey.current = '';
+        trackedPhaseKey.current = '';
         const stamped = stampSettings(hostSettings);
-        await cloudReturnToLobby({ roomCode: room.roomCode, hostUserId: user.id, settings: stamped });
+        setHostSettings(parseSettings(stamped));
+        seededHostRoom.current = room.roomCode;
+        setRoom((prev) => {
+          if (!prev) return prev;
+          const merged = {
+            ...prev,
+            status: 'lobby' as const,
+            gameState: null,
+            lobbySettings: stamped,
+          };
+          roomRef.current = merged;
+          return merged;
+        });
+        // Tell guests immediately so they leave the champion screen before the DB round-trip.
+        roomSub.current?.publishReturnToLobby(stamped);
         roomSub.current?.publishLobbySettings(stamped);
+        await cloudReturnToLobby({ roomCode: room.roomCode, hostUserId: user.id, settings: stamped });
+        awaitLobbyAck.current = false;
+        roomSub.current?.publishLobbySettings(stamped);
+        roomSub.current?.publishReturnToLobby(stamped);
       }}
     />
   );
