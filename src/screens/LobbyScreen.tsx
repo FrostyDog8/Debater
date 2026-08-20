@@ -58,8 +58,7 @@ export function LobbyScreen({
     return 0;
   });
 
-  // Prefer one column while it fits; switch to two columns when the list would overflow.
-  // Scrolling only kicks in after two columns still exceed the available height.
+  // Prefer one column while it fits; switch to two columns only after a real overflow.
   useLayoutEffect(() => {
     const list = listRef.current;
     if (!list) return;
@@ -70,19 +69,32 @@ export function LobbyScreen({
         setTwoCols(false);
         return;
       }
-      const styles = getComputedStyle(list);
-      const gap = parseFloat(styles.rowGap || styles.gap || '0') || 0;
-      let singleColHeight = 0;
-      rows.forEach((row, i) => {
-        singleColHeight += row.getBoundingClientRect().height;
-        if (i > 0) singleColHeight += gap;
-      });
+
+      // Probe as a single column so we never "start" in 2-col by accident.
+      const hadTwo = list.classList.contains('cols-2');
+      if (hadTwo) list.classList.remove('cols-2');
+      void list.offsetHeight;
+
       const available = list.clientHeight;
-      setTwoCols(available > 0 && singleColHeight > available + 1);
+      const needed = list.scrollHeight;
+      const rowH = rows[0]?.offsetHeight ?? 0;
+
+      if (hadTwo) list.classList.add('cols-2');
+
+      // Wait until the list has a usable height (layout settled).
+      if (available < Math.max(48, rowH * 1.5)) {
+        setTwoCols(false);
+        return;
+      }
+
+      const overflows = needed > available + 2;
+      setTwoCols(overflows);
     };
 
     measure();
-    const ro = new ResizeObserver(measure);
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(measure);
+    });
     ro.observe(list);
     if (list.parentElement) ro.observe(list.parentElement);
     return () => ro.disconnect();
