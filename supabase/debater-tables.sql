@@ -64,9 +64,9 @@ create index if not exists debater_topics_created_idx on public.debater_topics (
 
 -- Optional: if the table already existed without pack_id, add it + uniqueness.
 alter table public.debater_topics add column if not exists pack_id text;
+drop index if exists public.debater_topics_game_pack_uidx;
 create unique index if not exists debater_topics_game_pack_uidx
-  on public.debater_topics (game_id, pack_id)
-  where pack_id is not null;
+  on public.debater_topics (game_id, pack_id);
 
 -- ---------------------------------------------------------------------------
 -- Helpers

@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState, Fragment } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  allTopicVotesIn,
   allRequiredPacksIn,
   CLAP_COOLDOWN_MS,
   VOTE_POINTS,
@@ -17,7 +16,6 @@ import {
   packTextReady,
   peekNextMatch,
   splitVoteProgress,
-  hasUnusedPack,
   expectedPackAuthors,
   submittedPackAuthors,
   stancesFor,
@@ -89,17 +87,24 @@ export function PlayScreen({
   const isDebater = currentDebaters(engine).includes(selfId);
   const progress = packProgress(engine, ids);
   const packsReady = allRequiredPacksIn(engine, ids);
-  const packIn = hasUnusedPack(engine, selfId);
+  const packIn = submittedPackAuthors(engine, ids).includes(selfId);
   const [localClapAt, setLocalClapAt] = useState(0);
   const clapAt = Math.max(input.lastClapAt ?? 0, localClapAt);
   const clapLocked = clapAt > 0 && now - clapAt < CLAP_COOLDOWN_MS;
   const [draft, setDraft] = useState({ topic: '', stanceA: '', stanceB: '' });
+  const [pickedTopicId, setPickedTopicId] = useState<string | null>(null);
   const packValid = packTextReady(draft.topic, draft.stanceA, draft.stanceB);
   useEffect(() => {
     if (engine.phase !== 'debate') setLocalClapAt(0);
   }, [engine.phase]);
+  useEffect(() => {
+    if (engine.phase !== 'vote_final_topic') setPickedTopicId(null);
+  }, [engine.phase]);
   const bursts = useClapBursts(engine.clapA, engine.clapB);
-  const showLiveScores = engine.phase === 'match_result' || engine.phase === 'champion';
+  const showLiveScores =
+    (engine.phase === 'match_result' &&
+      (engine.stageKind !== 'final' || engine.finalOutcomeRevealed)) ||
+    engine.phase === 'champion';
   const upcoming = peekNextMatch(engine);
   const clapsA = clapSum(engine.clapA);
   const clapsB = clapSum(engine.clapB);
@@ -109,7 +114,6 @@ export function PlayScreen({
   const voteProgress = splitVoteProgress(engine, ids);
   const finalTopicVoters = ids.filter((id) => !engine.activeIds.includes(id));
   const finalTopicVotesIn = finalTopicVoters.filter((id) => !!engine.topicVotes[id]).length;
-  const allFinalTopicVotesIn = allTopicVotesIn(engine, ids);
   const waitingTopicIds = expectedPackAuthors(engine, ids).filter(
     (id) => !submittedPackAuthors(engine, ids).includes(id),
   );
@@ -203,29 +207,63 @@ export function PlayScreen({
             <p className="vote-progress">
               Votes in {finalTopicVotesIn} / {finalTopicVoters.length || '—'}
             </p>
-            {engine.activeIds.includes(selfId) ? (
+            {engine.finalSelectedPackId ? (
+              <>
+                <p className="final-topic-ready">All topic votes are in.</p>
+                <div className="dock" style={{ marginTop: 'auto', paddingTop: 8 }}>
+                  {host ? (
+                    <button className="btn" onClick={onHostContinue}>
+                      Play round
+                    </button>
+                  ) : (
+                    <span className="names">Waiting for the host to start the round.</span>
+                  )}
+                </div>
+              </>
+            ) : engine.activeIds.includes(selfId) ? (
               <p className="finalist-wait">You are a finalist. Wait while the listeners choose the finals topic.</p>
             ) : (
-              <div className="topic-list">
-                {listenerPacks(engine).map((p) => (
-                  <button
-                    key={p.id}
-                    className="btn ghost"
-                    disabled={!!input.topicVote}
-                    onClick={() => onInput({ ...input, topicVote: p.id })}
-                  >
-                    {p.topic}
-                  </button>
-                ))}
-              </div>
+              <>
+                <div className="topic-list">
+                  {listenerPacks(engine).map((p) => {
+                    const locked = !!input.topicVote;
+                    const selected = (input.topicVote ?? pickedTopicId) === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className={`btn ghost topic-option${selected ? ' is-selected' : ''}${locked && selected ? ' is-locked' : ''}`}
+                        disabled={locked}
+                        onClick={() => setPickedTopicId(p.id)}
+                      >
+                        {p.topic}
+                      </button>
+                    );
+                  })}
+                </div>
+                {input.topicVote ? (
+                  <p className="vote-locked">Vote locked.</p>
+                ) : (
+                  <div className="row" style={{ marginTop: 8, justifyContent: 'center' }}>
+                    <button
+                      className="btn"
+                      disabled={!pickedTopicId}
+                      onClick={() => {
+                        if (!pickedTopicId) return;
+                        onInput({ ...input, topicVote: pickedTopicId });
+                      }}
+                    >
+                      Submit vote
+                    </button>
+                  </div>
+                )}
+                {host ? (
+                  <div className="dock" style={{ marginTop: 'auto', paddingTop: 8 }}>
+                    <span className="names">Waiting for every vote.</span>
+                  </div>
+                ) : null}
+              </>
             )}
-            {host ? (
-              <div className="dock" style={{ marginTop: 'auto', paddingTop: 8 }}>
-                <button className="btn" disabled={!allFinalTopicVotesIn} onClick={onHostContinue}>
-                  Tally topic votes
-                </button>
-              </div>
-            ) : null}
           </>
         )}
 
@@ -338,7 +376,26 @@ export function PlayScreen({
           </div>
         )}
 
-        {engine.phase === 'match_result' && match && (
+        {engine.phase === 'match_result' && match && engine.stageKind === 'final' && !engine.finalOutcomeRevealed && (
+          <div className="result-board">
+            <h2 className="result-title">Finals</h2>
+            <p className="final-votes-in">All votes are in.</p>
+            <p className="final-winner-tease">The winner is…</p>
+            <div className="dock result-actions">
+              {host ? (
+                <button className="btn" onClick={onHostContinue}>
+                  Reveal winner
+                </button>
+              ) : (
+                <span className="names">Waiting for the host to reveal the winner.</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {engine.phase === 'match_result' &&
+          match &&
+          !(engine.stageKind === 'final' && !engine.finalOutcomeRevealed) && (
           <div className="result-board">
             <h2 className="result-title">{engine.lastDraw ? 'Draw' : 'Result'}</h2>
             <p className="result-score">
@@ -358,7 +415,7 @@ export function PlayScreen({
                 Next up: {nameOf(room, upcoming.aId)} vs {nameOf(room, upcoming.bId)}
               </p>
             ) : engine.stageKind === 'final' ? (
-              <p className="next-up">{engine.lastDraw ? 'Finalists replay with a new topic.' : 'That was the final.'}</p>
+              <p className="next-up">Finalists replay with a new topic.</p>
             ) : (
               <p className="next-up">End of this round.</p>
             )}
@@ -376,6 +433,7 @@ export function PlayScreen({
 
         {engine.phase === 'champion' && (
           <ChampionPanel
+            room={room}
             engine={engine}
             host={host}
             nameOf={(id) => nameOf(room, id)}
@@ -431,48 +489,62 @@ function Scoreboard({
   highlightOutcome?: boolean;
   roundOver?: boolean;
 }) {
-  const rows = [...engine.activeIds].sort((a, b) => (engine.scores[b] ?? 0) - (engine.scores[a] ?? 0));
+  const playerName = (id: string) => room.players.find((p) => p.id === id)?.name ?? id.slice(0, 6);
+  const byScoreDescName = (a: string, b: string) => {
+    const d = (engine.scores[b] ?? 0) - (engine.scores[a] ?? 0);
+    if (d !== 0) return d;
+    return playerName(a).localeCompare(playerName(b), undefined, { sensitivity: 'base' });
+  };
+  const byScoreAscName = (a: string, b: string) => {
+    const d = (engine.scores[a] ?? 0) - (engine.scores[b] ?? 0);
+    if (d !== 0) return d;
+    return playerName(a).localeCompare(playerName(b), undefined, { sensitivity: 'base' });
+  };
+
   const cutoff = eliminationsThisStage(engine.stageKind);
-  const sortedAsc = [...engine.activeIds].sort((a, b) => (engine.scores[a] ?? 0) - (engine.scores[b] ?? 0) || a.localeCompare(b));
-  const eliminated = highlightOutcome && cutoff > 0 ? new Set(sortedAsc.slice(0, cutoff)) : new Set<string>();
-  const firstOut = highlightOutcome ? rows.find((id) => eliminated.has(id)) : undefined;
-  const showSections = eliminated.size > 0;
+  // Display-only: N lowest seats by score, alphabetical by name on ties.
+  // (Game elimination still uses lowestDrop elsewhere — all-or-nothing on tied groups.)
+  const dangerIds =
+    highlightOutcome && cutoff > 0
+      ? [...engine.activeIds].sort(byScoreAscName).slice(0, cutoff)
+      : [];
+  const eliminated = new Set(dangerIds);
+  const safeRows = engine.activeIds.filter((id) => !eliminated.has(id)).sort(byScoreDescName);
+  const outRows = dangerIds.slice().sort(byScoreDescName);
+  const showSections = outRows.length > 0;
+
   return (
     <div className="scoreboard">
       {showSections && roundOver ? <p className="score-section score-section-safe">Moved on</p> : null}
-      {rows.map((id) => (
-        <Fragment key={id}>
-          {showSections && id === firstOut ? (
-            <p className={`score-section ${roundOver ? 'score-section-out' : 'score-section-danger'}`}>
-              {roundOver ? 'Eliminated' : 'Danger zone'}
-            </p>
-          ) : null}
-          <div
-            className={
-              highlightOutcome
-                ? eliminated.has(id)
-                  ? id === firstOut
-                    ? 'score-out score-out-first'
-                    : 'score-out'
-                  : 'score-safe'
-                : undefined
-            }
-          >
-            <span>{room.players.find((p) => p.id === id)?.name ?? id.slice(0, 6)}</span>
-            <span>{showScores ? formatPoints(engine.scores[id] ?? 0) : ''}</span>
-          </div>
-        </Fragment>
+      {safeRows.map((id) => (
+        <div key={id} className={highlightOutcome ? 'score-safe' : undefined}>
+          <span>{playerName(id)}</span>
+          <span>{showScores ? formatPoints(engine.scores[id] ?? 0) : ''}</span>
+        </div>
+      ))}
+      {showSections ? (
+        <p className={`score-section ${roundOver ? 'score-section-out' : 'score-section-danger'}`}>
+          {roundOver ? 'Eliminated' : 'Danger zone'}
+        </p>
+      ) : null}
+      {outRows.map((id) => (
+        <div key={id} className="score-out">
+          <span>{playerName(id)}</span>
+          <span>{showScores ? formatPoints(engine.scores[id] ?? 0) : ''}</span>
+        </div>
       ))}
     </div>
   );
 }
 
 function ChampionPanel({
+  room,
   engine,
   host,
   nameOf,
   onPlayAgain,
 }: {
+  room: Room;
   engine: Engine;
   host: boolean;
   nameOf(id: string): string;
@@ -504,12 +576,20 @@ function ChampionPanel({
       scores[entry.aId] = (scores[entry.aId] ?? 0) + entry.pointsA;
       scores[entry.bId] = (scores[entry.bId] ?? 0) + entry.pointsB;
     }
-    const ids = Object.keys(scores).sort((a, b) => (scores[b] ?? 0) - (scores[a] ?? 0) || a.localeCompare(b));
+    const ids = Object.keys(scores);
+    const byScoreDescName = (a: string, b: string) => {
+      const d = (scores[b] ?? 0) - (scores[a] ?? 0);
+      if (d !== 0) return d;
+      return nameOf(a).localeCompare(nameOf(b), undefined, { sensitivity: 'base' });
+    };
     const dropWant = stageKind ? eliminationsThisStage(stageKind) : 0;
     const dropped = dropWant > 0 ? new Set(lowestDrop(ids, scores, dropWant)) : new Set<string>();
-    const firstOut = ids.find((id) => dropped.has(id));
-    return { scores, ids, dropped, firstOut };
-  }, [roundItems, stageKind]);
+    const safeIds = ids.filter((id) => !dropped.has(id)).sort(byScoreDescName);
+    const outIds = ids.filter((id) => dropped.has(id)).sort(byScoreDescName);
+    return { scores, safeIds, outIds, dropped };
+  }, [roundItems, stageKind, nameOf]);
+
+  const finalMatch = engine.matchHistory.filter((e) => e.stageKind === 'final').at(-1);
 
   if (showSummary) {
     return (
@@ -565,27 +645,26 @@ function ChampionPanel({
             {stageStanding.dropped.size > 0 ? (
               <p className="score-section score-section-safe">Moved on</p>
             ) : null}
-            {stageStanding.ids.map((id) => (
-              <Fragment key={id}>
-                {id === stageStanding.firstOut ? (
-                  <p className="score-section score-section-out">Eliminated</p>
-                ) : null}
-                <div
-                  className={
-                    stageStanding.dropped.has(id)
-                      ? 'score-out'
-                      : stageStanding.dropped.size > 0
-                        ? 'score-safe'
-                        : undefined
-                  }
-                >
-                  <span>
-                    {nameOf(id)}
-                    {id === engine.championId && stageKind === 'final' ? ' 🏆' : ''}
-                  </span>
-                  <span>{formatPoints(stageStanding.scores[id] ?? 0)}</span>
-                </div>
-              </Fragment>
+            {stageStanding.safeIds.map((id) => (
+              <div
+                key={id}
+                className={stageStanding.dropped.size > 0 ? 'score-safe' : undefined}
+              >
+                <span>
+                  {nameOf(id)}
+                  {id === engine.championId && stageKind === 'final' ? ' 🏆' : ''}
+                </span>
+                <span>{formatPoints(stageStanding.scores[id] ?? 0)}</span>
+              </div>
+            ))}
+            {stageStanding.outIds.length > 0 ? (
+              <p className="score-section score-section-out">Eliminated</p>
+            ) : null}
+            {stageStanding.outIds.map((id) => (
+              <div key={id} className="score-out">
+                <span>{nameOf(id)}</span>
+                <span>{formatPoints(stageStanding.scores[id] ?? 0)}</span>
+              </div>
             ))}
           </div>
         </div>
@@ -605,6 +684,32 @@ function ChampionPanel({
         <h2>Champion</h2>
         <p className="champion-name">{engine.championId ? nameOf(engine.championId) : '—'}</p>
       </div>
+      {finalMatch ? (
+        <div className="champion-final-results">
+          <p className="result-score">
+            <span className="side-a">{nameOf(finalMatch.aId)}:</span> {formatPoints(finalMatch.pointsA)}
+            <span> · </span>
+            <span className="side-b">{nameOf(finalMatch.bId)}:</span> {formatPoints(finalMatch.pointsB)}
+          </p>
+          <div className="scoreboard">
+            {[finalMatch.aId, finalMatch.bId]
+              .sort((a, b) => (engine.scores[b] ?? 0) - (engine.scores[a] ?? 0) || nameOf(a).localeCompare(nameOf(b)))
+              .map((id) => (
+                <div key={id} className={id === engine.championId ? 'score-safe' : undefined}>
+                  <span>
+                    {nameOf(id)}
+                    {id === engine.championId ? ' 🏆' : ''}
+                  </span>
+                  <span>{formatPoints(engine.scores[id] ?? 0)}</span>
+                </div>
+              ))}
+          </div>
+        </div>
+      ) : (
+        <div className="champion-final-results">
+          <Scoreboard room={room} engine={engine} showScores />
+        </div>
+      )}
       <div className="dock champion-actions">
         <button
           className="btn ghost summary-btn"

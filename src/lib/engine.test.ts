@@ -261,9 +261,9 @@ describe('round topic leftovers', () => {
     expect(e.activeIds).toEqual(['a', 'b', 'c', 'd']);
     // Leftover unused packs stay available (a/b/c still have unused topics).
     expect(unusedPacks(e).map((p) => p.authorId).sort()).toEqual(['a', 'b', 'c']);
-    // Everyone in the room is asked; a/b/c already have unused packs.
-    expect(packProgress(e, ids)).toEqual({ have: 3, need: 6 });
-    expect(playersNeedingPack(e, ids).sort()).toEqual(['d', 'e', 'f']);
+    // Everyone must still submit a fresh topic for the new round.
+    expect(packProgress(e, ids)).toEqual({ have: 0, need: 6 });
+    expect(playersNeedingPack(e, ids).sort()).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
   });
 
   it('marks every topic used only when entering finals', () => {
@@ -323,6 +323,16 @@ describe('packs', () => {
     e = addPack(e, 'a', { topic: 'Cats vs dogs xx', stanceA: '', stanceB: '' });
     expect(e.packPool).toEqual([]);
     e = addPack(e, 'a', { topic: 'Cats vs dogs xx', stanceA: 'Cats are better.', stanceB: 'Dogs are better.' });
+    expect(e.packPool).toHaveLength(1);
+  });
+
+  it('does not duplicate the same author topic on re-apply', () => {
+    const ids = ['a', 'b', 'c'];
+    let e = createEngine(ids);
+    const pack = { topic: 'Cats vs dogs xx', stanceA: 'Cats are better.', stanceB: 'Dogs are better.' };
+    e = addPack(e, 'a', pack);
+    e = addPack(e, 'a', pack);
+    e = addPack(e, 'a', pack);
     expect(e.packPool).toHaveLength(1);
   });
 });

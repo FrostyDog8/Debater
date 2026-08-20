@@ -281,25 +281,31 @@ export async function cloudFetchRoom(roomCode: string): Promise<Room> {
 export async function cloudRecordTopic(params: {
   gameId: string;
   roomCode: string;
-  packId?: string;
+  packId: string;
   topic: string;
   stanceA: string;
   stanceB: string;
   suggestedBy: string;
   suggestedByName?: string;
 }) {
-  const row: Record<string, string | null> = {
+  const packId = params.packId.trim();
+  if (!packId) return;
+
+  const row = {
     game_id: params.gameId,
     room_code: params.roomCode.trim().toUpperCase(),
+    pack_id: packId,
     topic: params.topic.trim(),
     stance_a: params.stanceA.trim(),
     stance_b: params.stanceB.trim(),
     suggested_by: params.suggestedBy,
     suggested_by_name: params.suggestedByName?.trim() || null,
   };
-  if (params.packId) row.pack_id = params.packId;
 
-  const { error } = await supabase.from('debater_topics').insert(row);
+  const { error } = await supabase.from('debater_topics').upsert(row, {
+    onConflict: 'game_id,pack_id',
+    ignoreDuplicates: true,
+  });
   // Unique (game_id, pack_id) — ignore duplicate inserts from retries.
   if (error && error.code === '23505') return;
   if (error) throw error;

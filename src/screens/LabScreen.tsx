@@ -66,7 +66,7 @@ export function LabScreen() {
   const autofillTopics = () => {
     const ch = new BroadcastChannel('lab:autofill');
     for (let i = 0; i < count; i++) {
-      ch.postMessage(randomPack(i));
+      ch.postMessage({ seat: i + 1, ...randomPack(i) });
     }
     ch.close();
   };
@@ -74,7 +74,7 @@ export function LabScreen() {
   const autofillVotes = () => {
     const ch = new BroadcastChannel('lab:autofill');
     for (let i = 0; i < count; i++) {
-      ch.postMessage(randomSplitVote());
+      ch.postMessage({ seat: i + 1, ...randomSplitVote() });
     }
     ch.close();
   };

@@ -31,5 +31,5 @@ Also adds:
 - Topics stay after a room closes (no cascade delete from rooms).
 - Closing a room sets `is_active = false` / `status = 'ended'` and clears players; the row (and its `id` / game id) remains for history.
 - Anonymous sign-in must stay enabled (same as before).
-- If `debater_topics` already exists, run [`debater-topics-pack-id.sql`](./debater-topics-pack-id.sql) so each pack is stored once (`game_id` + `pack_id`) and the host can archive all room topics.
+- If `debater_topics` already exists, run [`debater-topics-pack-id.sql`](./debater-topics-pack-id.sql) so each pack is stored once (`game_id` + `pack_id`) and the host can archive all room topics. Safe to re-run; it also deletes duplicate archive rows.
 - If “Play again” ever desyncs host vs guests, run [`debater-patch-playing-only.sql`](./debater-patch-playing-only.sql) so game patches are ignored while the room is in lobby (also included in a fresh `debater-tables.sql`).

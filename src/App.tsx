@@ -9,6 +9,7 @@ import {
   hostSkipDebate,
   hostUnpause,
   isPaused,
+  lockFinalTopicPick,
   MIN_START_PLAYERS,
   parseSettings,
   resolveSplit,
@@ -104,8 +105,8 @@ export function App() {
     const ch = new BroadcastChannel('lab:autofill');
     ch.onmessage = (
       ev: MessageEvent<
-        | { topic: string; stanceA: string; stanceB: string }
-        | { splitA: number }
+        | { seat?: number; topic: string; stanceA: string; stanceB: string }
+        | { seat?: number; splitA: number }
         | { skipRound: true }
       >,
     ) => {
@@ -126,6 +127,10 @@ export function App() {
           patch: { engine: next, ...wipedInputs(playerIds) },
           replace: false,
         });
+        return;
+      }
+      const mySeat = Number(seat);
+      if (data && typeof (data as { seat?: number }).seat === 'number' && (data as { seat: number }).seat !== mySeat) {
         return;
       }
       if (data && 'topic' in data && typeof data.topic === 'string') {
@@ -414,8 +419,8 @@ export function App() {
     if (next.phase === 'split_vote' && previousPhase === 'split_vote' && allSplitsIn(next, ids)) {
       next = resolveSplit(next, ids);
     }
-    if (next.phase === 'vote_final_topic' && previousPhase === 'vote_final_topic' && allTopicVotesIn(next, ids)) {
-      next = hostContinue(next, ids);
+    if (next.phase === 'vote_final_topic' && !next.finalSelectedPackId && allTopicVotesIn(next, ids)) {
+      next = lockFinalTopicPick(next, ids);
     }
     const phaseKey = `${next.phase}:${next.matchIndex}:${next.stageKind}`;
     const serialized = JSON.stringify(next);
@@ -514,9 +519,11 @@ export function App() {
   // Host-only: archive each pack once when it enters the engine (avoids N duplicate rows).
   useEffect(() => {
     if (!isHost || !room?.gameId || !parsed) return;
+    const gameId = room.gameId;
     for (const pack of parsed.engine.packPool) {
-      if (recordedPackIds.current.has(pack.id)) continue;
-      recordedPackIds.current.add(pack.id);
+      const key = `${gameId}:${pack.id}`;
+      if (recordedPackIds.current.has(key)) continue;
+      recordedPackIds.current.add(key);
       const authorName = room.players.find((p) => p.id === pack.authorId)?.name;
       trackEvent('topic_submitted', {
         ...roomParams(room),
@@ -524,7 +531,7 @@ export function App() {
         topic_count: parsed.engine.packPool.length,
       });
       void cloudRecordTopic({
-        gameId: room.gameId,
+        gameId,
         roomCode: room.roomCode,
         packId: pack.id,
         topic: pack.topic,

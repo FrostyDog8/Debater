@@ -85,6 +85,12 @@ export type Engine = {
   activeIds: PlayerId[];
   packPool: Pack[];
   usedPackIds: string[];
+  /**
+   * Pack ids that already existed when the current collect_packs phase began.
+   * Leftovers stay in the pool for matchmaking, but only packs added after this
+   * baseline count as “submitted this round.”
+   */
+  collectBaselinePackIds: string[];
   matches: Match[];
   matchIndex: number;
   /** Completed debates across the whole game, for the end summary. */
@@ -101,6 +107,10 @@ export type Engine = {
   autoOutId: PlayerId | null;
   topicVotes: Record<PlayerId, string>;
   finalPackIds: string[];
+  /** Winning finals topic after votes are in; prep waits for host Continue. */
+  finalSelectedPackId: string | null;
+  /** After finals score voting, host must reveal before draw/champion UI. */
+  finalOutcomeRevealed: boolean;
   phaseEndsAtMs: number | null;
   /** When set, the clock is paused with this many ms left on the current beat. */
   pauseRemainingMs: number | null;
@@ -168,6 +178,7 @@ export function createEngine(activeIds: PlayerId[], settings: Settings = DEFAULT
     activeIds: ids,
     packPool: [],
     usedPackIds: [],
+    collectBaselinePackIds: [],
     matches: [],
     matchIndex: 0,
     matchHistory: [],
@@ -182,6 +193,8 @@ export function createEngine(activeIds: PlayerId[], settings: Settings = DEFAULT
     autoOutId: null,
     topicVotes: {},
     finalPackIds: [],
+    finalSelectedPackId: null,
+    finalOutcomeRevealed: false,
     phaseEndsAtMs: null,
     pauseRemainingMs: null,
     turnIndex: 0,
@@ -208,11 +221,24 @@ export function hasUnusedPack(engine: Engine, authorId: PlayerId): boolean {
   return unusedPacks(engine).some((p) => p.authorId === authorId);
 }
 
+/** True if this author added a topic during the current collect phase. */
+export function hasSubmittedThisCollect(engine: Engine, authorId: PlayerId): boolean {
+  const baseline = new Set(engine.collectBaselinePackIds);
+  return engine.packPool.some((p) => p.authorId === authorId && !baseline.has(p.id));
+}
+
+function withCollectBaseline(engine: Engine): Engine {
+  return {
+    ...engine,
+    collectBaselinePackIds: engine.packPool.map((p) => p.id),
+  };
+}
+
 export function playersNeedingPack(engine: Engine, roomPlayerIds: PlayerId[] = []): PlayerId[] {
   if (engine.phase === 'collect_final_topics') return [];
   if (engine.phase !== 'collect_packs') return [];
   const pool = roomPlayerIds.length > 0 ? roomPlayerIds : engine.activeIds;
-  return pool.filter((id) => !hasUnusedPack(engine, id));
+  return pool.filter((id) => !hasSubmittedThisCollect(engine, id));
 }
 
 export function expectedPackAuthors(engine: Engine, roomPlayerIds: PlayerId[]): PlayerId[] {
@@ -227,7 +253,7 @@ export function expectedPackAuthors(engine: Engine, roomPlayerIds: PlayerId[]): 
 
 export function submittedPackAuthors(engine: Engine, roomPlayerIds: PlayerId[]): PlayerId[] {
   if (engine.phase === 'collect_packs') {
-    return expectedPackAuthors(engine, roomPlayerIds).filter((id) => hasUnusedPack(engine, id));
+    return expectedPackAuthors(engine, roomPlayerIds).filter((id) => hasSubmittedThisCollect(engine, id));
   }
   if (engine.phase === 'collect_final_topics') {
     const allow = new Set(engine.finalPackIds);
@@ -302,11 +328,28 @@ function emptyMatchInputs(): Pick<Engine, 'clapA' | 'clapB' | 'lastClapAt' | 'sp
   return { clapA: {}, clapB: {}, lastClapAt: {}, splitA: {} };
 }
 
+/** Stable id so retries / re-parses do not spawn duplicate archive rows. */
+export function packIdFor(
+  authorId: PlayerId,
+  topic: string,
+  stanceA: string,
+  stanceB: string,
+  salt = '',
+): string {
+  const payload = `${authorId}\n${topic}\n${stanceA}\n${stanceB}\n${salt}`;
+  let h = 2166136261;
+  for (let i = 0; i < payload.length; i++) {
+    h ^= payload.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `pack_${authorId}_${(h >>> 0).toString(16)}`;
+}
+
 export function addPack(
   engine: Engine,
   authorId: PlayerId,
   entry: { topic: string; stanceA: string; stanceB: string },
-  rng: () => number = Math.random,
+  _rng: () => number = Math.random,
 ): Engine {
   const topic = entry.topic.trim();
   const stanceA = entry.stanceA.trim();
@@ -314,21 +357,28 @@ export function addPack(
   if (topic.length < 1 || stanceA.length < 1 || stanceB.length < 1) return engine;
 
   if (engine.phase === 'collect_packs') {
-    if (hasUnusedPack(engine, authorId)) return engine;
+    if (hasSubmittedThisCollect(engine, authorId)) return engine;
   } else if (engine.phase === 'collect_final_topics') {
     if (engine.activeIds.includes(authorId)) return engine;
-    if (engine.finalPackIds.some((id) => engine.packPool.find((p) => p.id === id)?.authorId === authorId)) return engine;
+    if (engine.finalPackIds.some((fid) => engine.packPool.find((p) => p.id === fid)?.authorId === authorId)) {
+      return engine;
+    }
   } else {
     return engine;
   }
 
-  const pack: Pack = {
-    id: `pack_${authorId}_${Date.now().toString(16)}_${Math.floor(rng() * 1e9).toString(16)}`,
-    authorId,
-    topic,
-    stanceA,
-    stanceB,
-  };
+  // Salt by collect baseline so a leftover topic can be re-submitted as a fresh pack,
+  // and finals topics do not collide with earlier-round ids.
+  const salt = `${engine.phase}:${engine.roundIndex}:${engine.collectBaselinePackIds.length}`;
+  const id = packIdFor(authorId, topic, stanceA, stanceB, salt);
+  if (engine.packPool.some((p) => p.id === id)) {
+    if (engine.phase === 'collect_final_topics' && !engine.finalPackIds.includes(id)) {
+      return { ...engine, finalPackIds: [...engine.finalPackIds, id], replayNote: null };
+    }
+    return engine;
+  }
+
+  const pack: Pack = { id, authorId, topic, stanceA, stanceB };
   return {
     ...engine,
     packPool: [...engine.packPool, pack],
@@ -502,6 +552,9 @@ export function beginFinalTopicCollection(engine: Engine): Engine {
     topicVotes: {},
     finalPackIds: [],
     usedPackIds: engine.packPool.map((p) => p.id),
+    collectBaselinePackIds: engine.packPool.map((p) => p.id),
+    finalSelectedPackId: null,
+    finalOutcomeRevealed: false,
     scores: resetStageScores(ids),
     lastPointsA: 0,
     lastPointsB: 0,
@@ -528,14 +581,32 @@ export function maybeLockFinalTopics(engine: Engine, roomPlayerIds: PlayerId[]):
   if (packs.length === 0) return engine;
   const listeners = roomPlayerIds.filter((id) => !engine.activeIds.includes(id));
   if (listeners.length <= 1 || packs.length === 1) {
-    return startFinalWithPack(engine, packs[0]!.id);
+    // No vote needed — lock the only option and wait for the host to start.
+    return {
+      ...engine,
+      phase: 'vote_final_topic',
+      topicVotes: {},
+      finalSelectedPackId: packs[0]!.id,
+      splitA: {},
+      clapA: {},
+      clapB: {},
+    };
   }
-  return { ...engine, phase: 'vote_final_topic', topicVotes: {}, splitA: {}, clapA: {}, clapB: {} };
+  return {
+    ...engine,
+    phase: 'vote_final_topic',
+    topicVotes: {},
+    finalSelectedPackId: null,
+    splitA: {},
+    clapA: {},
+    clapB: {},
+  };
 }
 
 export function voteFinalTopic(engine: Engine, voterId: PlayerId, packId: string): Engine {
   if (engine.phase !== 'vote_final_topic') return engine;
   if (engine.activeIds.includes(voterId)) return engine;
+  if (engine.finalSelectedPackId) return engine;
   if (!listenerPacks(engine).some((p) => p.id === packId)) return engine;
   return { ...engine, topicVotes: { ...engine.topicVotes, [voterId]: packId } };
 }
@@ -546,18 +617,37 @@ export function allTopicVotesIn(engine: Engine, roomPlayerIds: PlayerId[]): bool
   return listeners.every((id) => !!engine.topicVotes[id]);
 }
 
-export function resolveFinalTopicVote(engine: Engine, rng: () => number = Math.random): Engine {
+/** Majority / tie-break pick for the finals topic (does not start the match). */
+export function pickFinalTopicPackId(engine: Engine): string | null {
   const packs = listenerPacks(engine);
-  if (packs.length === 0) return engine;
+  if (packs.length === 0) return null;
   const counts = new Map<string, number>();
   for (const pack of packs) counts.set(pack.id, 0);
   for (const packId of Object.values(engine.topicVotes)) {
     if (counts.has(packId)) counts.set(packId, (counts.get(packId) ?? 0) + 1);
   }
-  let best = 0;
+  let best = -1;
   for (const c of counts.values()) best = Math.max(best, c);
-  const leaders = [...counts.entries()].filter(([, c]) => c === best).map(([id]) => id);
-  const pick = leaders[Math.floor(rng() * leaders.length)] ?? packs[0]!.id;
+  const leaders = [...counts.entries()]
+    .filter(([, c]) => c === best)
+    .map(([id]) => id)
+    .sort();
+  return leaders[0] ?? packs[0]!.id;
+}
+
+/** When every listener has voted, lock the winning topic and wait for the host. */
+export function lockFinalTopicPick(engine: Engine, roomPlayerIds: PlayerId[]): Engine {
+  if (engine.phase !== 'vote_final_topic') return engine;
+  if (engine.finalSelectedPackId) return engine;
+  if (!allTopicVotesIn(engine, roomPlayerIds)) return engine;
+  const pick = pickFinalTopicPackId(engine);
+  if (!pick) return engine;
+  return { ...engine, finalSelectedPackId: pick };
+}
+
+export function resolveFinalTopicVote(engine: Engine, rng: () => number = Math.random): Engine {
+  const pick = engine.finalSelectedPackId ?? pickFinalTopicPackId(engine);
+  if (!pick) return engine;
   return startFinalWithPack(engine, pick, rng);
 }
 
@@ -580,6 +670,7 @@ export function startFinalWithPack(engine: Engine, packId: string, rng: () => nu
     scores: resetStageScores(engine.activeIds),
     leftoverPending: false,
     leftoverId: null,
+    finalSelectedPackId: packId,
     ...emptyMatchInputs(),
   });
 }
@@ -597,6 +688,7 @@ function startMatch(engine: Engine, now = Date.now()): Engine {
     lastDraw: false,
     lastPointsA: 0,
     lastPointsB: 0,
+    finalOutcomeRevealed: false,
     ...emptyMatchInputs(),
   };
 }
@@ -829,6 +921,7 @@ export function resolveSplit(engine: Engine, roomPlayerIds: PlayerId[]): Engine 
     lastDraw: draw,
     phaseEndsAtMs: null,
     hostNotice: null,
+    finalOutcomeRevealed: false,
     matchHistory: [...engine.matchHistory, entry],
   };
 }
@@ -863,7 +956,7 @@ function finishStage(engine: Engine): Engine {
   const want = kind === 'n3' ? 1 : 2;
   const drop = lowestDrop(engine.activeIds, engine.scores, want);
   if (drop.length === 0 || (kind === 'n3' && drop.length !== 1)) {
-    return {
+    return withCollectBaseline({
       ...engine,
       phase: 'collect_packs',
       // Keep usedPackIds as-is so unused leftover topics stay available.
@@ -876,7 +969,7 @@ function finishStage(engine: Engine): Engine {
       replayNote: 'Complete tie on the cutoff — that round is replayed.',
       pauseRemainingMs: null,
       ...emptyMatchInputs(),
-    };
+    });
   }
 
   let remaining = engine.activeIds.filter((id) => !drop.includes(id));
@@ -886,7 +979,7 @@ function finishStage(engine: Engine): Engine {
     // Finals: retire every existing topic, then listeners submit fresh ones.
     return beginFinalTopicCollection({ ...engine, activeIds: remaining });
   }
-  return {
+  return withCollectBaseline({
     ...engine,
     phase: 'collect_packs',
     stageKind: nextKind,
@@ -902,7 +995,7 @@ function finishStage(engine: Engine): Engine {
     championId: null,
     pauseRemainingMs: null,
     ...emptyMatchInputs(),
-  };
+  });
 }
 
 export function hostContinue(engine: Engine, roomPlayerIds: PlayerId[], rng: () => number = Math.random): Engine {
@@ -921,7 +1014,7 @@ export function hostContinue(engine: Engine, roomPlayerIds: PlayerId[], rng: () 
       if (stageFor(remaining.length) === 'final') {
         return beginFinalTopicCollection({ ...engine, activeIds: remaining });
       }
-      return {
+      return withCollectBaseline({
         ...engine,
         phase: 'collect_packs',
         stageKind: stageFor(remaining.length),
@@ -935,10 +1028,13 @@ export function hostContinue(engine: Engine, roomPlayerIds: PlayerId[], rng: () 
         replayNote: null,
         pauseRemainingMs: null,
         ...emptyMatchInputs(),
-      };
+      });
     }
 
     if (engine.stageKind === 'final' && engine.lastDraw) {
+      if (!engine.finalOutcomeRevealed) {
+        return { ...engine, finalOutcomeRevealed: true };
+      }
       return beginFinalTopicCollection(engine);
     }
     if (engine.stageKind === 'final') {
@@ -983,8 +1079,13 @@ export function hostContinue(engine: Engine, roomPlayerIds: PlayerId[], rng: () 
     return maybeLockFinalTopics(engine, roomPlayerIds);
   }
 
-  if (engine.phase === 'vote_final_topic' && allTopicVotesIn(engine, roomPlayerIds)) {
-    return resolveFinalTopicVote(engine, rng);
+  if (engine.phase === 'vote_final_topic') {
+    if (engine.finalSelectedPackId) {
+      return resolveFinalTopicVote(engine, rng);
+    }
+    if (allTopicVotesIn(engine, roomPlayerIds)) {
+      return resolveFinalTopicVote(lockFinalTopicPick(engine, roomPlayerIds), rng);
+    }
   }
 
   return engine;
@@ -1001,6 +1102,7 @@ export function parseEngine(raw: unknown, fallbackIds: PlayerId[]): Engine {
     activeIds: Array.isArray(s.activeIds) ? s.activeIds : base.activeIds,
     packPool: Array.isArray(s.packPool) ? s.packPool : [],
     usedPackIds: Array.isArray(s.usedPackIds) ? s.usedPackIds : [],
+    collectBaselinePackIds: Array.isArray(s.collectBaselinePackIds) ? s.collectBaselinePackIds : [],
     matches: Array.isArray(s.matches) ? s.matches : [],
     matchHistory: Array.isArray(s.matchHistory) ? s.matchHistory : [],
     roundIndex: typeof s.roundIndex === 'number' ? s.roundIndex : 0,
@@ -1011,6 +1113,8 @@ export function parseEngine(raw: unknown, fallbackIds: PlayerId[]): Engine {
     splitA: s.splitA && typeof s.splitA === 'object' ? s.splitA : {},
     topicVotes: s.topicVotes && typeof s.topicVotes === 'object' ? s.topicVotes : {},
     finalPackIds: Array.isArray(s.finalPackIds) ? s.finalPackIds : [],
+    finalSelectedPackId: typeof s.finalSelectedPackId === 'string' ? s.finalSelectedPackId : null,
+    finalOutcomeRevealed: !!s.finalOutcomeRevealed,
     pauseRemainingMs: typeof s.pauseRemainingMs === 'number' ? s.pauseRemainingMs : null,
     hostNotice: typeof s.hostNotice === 'string' ? s.hostNotice : null,
   };
