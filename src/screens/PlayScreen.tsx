@@ -223,29 +223,42 @@ export function PlayScreen({
         )}
 
         {match && stances && pack && (engine.phase === 'prep' || engine.phase === 'debate' || engine.phase === 'split_vote') && (
-          <div className="debate-arena">
+          <div className={`debate-arena${engine.phase === 'debate' ? ' is-debate' : ''}`}>
             {paused ? <p className="host-status-banner pause">Paused by host</p> : null}
             {showDangerChip ? (
               <p className="danger-chip">Lowest {dropCount} eliminated this round</p>
             ) : null}
             {engine.phase === 'debate' ? <ClapBursts bursts={bursts} className="clap-space clap-rail clap-rail-top" rail="top" /> : null}
-            <h2 className="topic">{pack.topic}</h2>
-            {engine.phase === 'prep' ? <p className="prep-banner">Preparation</p> : null}
-            {engine.phase === 'debate' ? (
-              <p className="turn-callout">
-                {turnWho ? (
-                  <>
-                    Now speaking:
-                    <span className={`turn-callout-name ${turnWho === 'A' ? 'turn-a' : 'turn-b'}`}>
-                      {' '}
-                      {turnWho === 'A' ? nameOf(room, match.aId) : nameOf(room, match.bId)}
-                    </span>
-                  </>
-                ) : (
-                  'Open floor'
-                )}
-              </p>
-            ) : null}
+            <div className="debate-focus">
+              <h2 className="topic">{pack.topic}</h2>
+              {engine.phase === 'prep' ? <p className="prep-banner">Preparation</p> : null}
+              {engine.phase === 'debate' ? (
+                <p className="turn-callout">
+                  {turnWho ? (
+                    <>
+                      Now speaking:
+                      <span className={`turn-callout-name ${turnWho === 'A' ? 'turn-a' : 'turn-b'}`}>
+                        {' '}
+                        {turnWho === 'A' ? nameOf(room, match.aId) : nameOf(room, match.bId)}
+                      </span>
+                    </>
+                  ) : (
+                    'Open floor'
+                  )}
+                </p>
+              ) : null}
+              {engine.phaseEndsAtMs || paused ? (
+                <div className="timer-slot">
+                  <div className={`timer${paused ? ' paused' : ''}${timerUrgent ? ' urgent' : ''}`}>
+                    {remaining(engine.phaseEndsAtMs, now, engine.pauseRemainingMs)}
+                    {paused ? <span className="paused-tag">Paused</span> : null}
+                    {timerUrgent ? <span className="urgent-tag">Hurry</span> : null}
+                  </div>
+                </div>
+              ) : (
+                <div className="timer-slot timer-slot-empty" aria-hidden />
+              )}
+            </div>
             <div className="debate-mid">
               <div className="split">
                 <div className="debater-col">
@@ -275,13 +288,6 @@ export function PlayScreen({
               </div>
             ) : null}
             {engine.phase === 'debate' ? <ClapBursts bursts={bursts} className="clap-space clap-rail clap-rail-bottom" rail="bottom" /> : null}
-            {engine.phaseEndsAtMs || paused ? (
-              <div className={`timer${paused ? ' paused' : ''}${timerUrgent ? ' urgent' : ''}`}>
-                {remaining(engine.phaseEndsAtMs, now, engine.pauseRemainingMs)}
-                {paused ? <span className="paused-tag">Paused</span> : null}
-                {timerUrgent ? <span className="urgent-tag">Hurry</span> : null}
-              </div>
-            ) : null}
             {host && (engine.phase === 'prep' || engine.phase === 'debate') ? (
               <div className="host-timer-controls">
                 <button className="btn ghost tiny" onClick={onHostPause}>
@@ -342,11 +348,13 @@ export function PlayScreen({
               room={room}
               engine={engine}
               showScores
-              highlightOutcome={engine.stageKind !== 'final' && !!upcoming}
+              highlightOutcome={engine.stageKind !== 'final'}
               dangerNote={
                 engine.stageKind !== 'final' && upcoming
                   ? `Danger zone: lowest ${eliminationsThisStage(engine.stageKind)} will be eliminated this round`
-                  : null
+                  : engine.stageKind !== 'final' && !upcoming
+                    ? `Eliminated: lowest ${eliminationsThisStage(engine.stageKind)}`
+                    : null
               }
             />
             {upcoming ? (
@@ -358,7 +366,7 @@ export function PlayScreen({
             ) : (
               <p className="next-up">End of this round.</p>
             )}
-            <div className="dock" style={{ marginTop: 'auto', paddingTop: 8 }}>
+            <div className="dock result-actions">
               {host ? (
                 <button className="btn" onClick={onHostContinue}>
                   Continue

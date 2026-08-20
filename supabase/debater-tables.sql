@@ -50,6 +50,7 @@ create table if not exists public.debater_topics (
   id                 bigint generated always as identity primary key,
   game_id            uuid not null,
   room_code          text not null,
+  pack_id            text,
   topic              text not null,
   stance_a           text not null,
   stance_b           text not null,
@@ -60,6 +61,12 @@ create table if not exists public.debater_topics (
 
 create index if not exists debater_topics_game_id_idx on public.debater_topics (game_id);
 create index if not exists debater_topics_created_idx on public.debater_topics (created_at desc);
+
+-- Optional: if the table already existed without pack_id, add it + uniqueness.
+alter table public.debater_topics add column if not exists pack_id text;
+create unique index if not exists debater_topics_game_pack_uidx
+  on public.debater_topics (game_id, pack_id)
+  where pack_id is not null;
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -234,7 +241,15 @@ create policy debater_topics_select on public.debater_topics
 drop policy if exists debater_topics_insert on public.debater_topics;
 create policy debater_topics_insert on public.debater_topics
   for insert to authenticated
-  with check (suggested_by = auth.uid());
+  with check (
+    suggested_by = auth.uid()
+    or exists (
+      select 1
+      from public.debater_rooms r
+      where r.id = game_id
+        and r.host_user_id = auth.uid()
+    )
+  );
 
 -- Realtime (ignore errors if already added)
 do $$

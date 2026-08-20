@@ -245,6 +245,33 @@ input[readonly] { opacity: 0.75; }
   gap: 0.25rem;
 }
 .topic { text-align: center; font-size: clamp(1.35rem, 5vmin, 2rem); position: relative; z-index: 1; }
+.debate-focus {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  width: 100%;
+  position: relative;
+  z-index: 1;
+}
+.debate-arena.is-debate {
+  justify-content: center;
+}
+.debate-arena.is-debate .debate-focus {
+  margin-top: auto;
+}
+.debate-arena.is-debate .debate-mid {
+  flex: 0 0 auto;
+  margin-bottom: auto;
+}
+.debate-arena.is-debate .topic {
+  font-size: clamp(1.55rem, 5.8vmin, 2.25rem);
+  margin: 0;
+}
+.debate-arena.is-debate .prep-banner,
+.debate-arena.is-debate .turn-callout {
+  font-size: clamp(1.2rem, 4.4vmin, 1.65rem);
+}
 .prep-banner {
   text-align: center;
   margin: 0.15rem 0 0.35rem;
@@ -346,20 +373,34 @@ input[readonly] { opacity: 0.75; }
   font-size: 0.72rem;
 }
 
-.timer {
-  font-size: clamp(1.4rem, 6vmin, 2.1rem);
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-  margin: 0.2rem 0;
+.timer-slot {
+  min-height: 4.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
   flex: 0 0 auto;
   position: relative;
   z-index: 1;
 }
+.timer-slot-empty { visibility: hidden; }
+.timer {
+  font-size: clamp(1.85rem, 7.2vmin, 2.7rem);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  margin: 0;
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 1;
+  line-height: 1.05;
+  font-weight: 700;
+}
 .timer.paused { color: var(--accent-2); }
 .timer.urgent {
   color: var(--danger);
-  font-size: clamp(1.75rem, 7.5vmin, 2.65rem);
   font-weight: 800;
+  /* Scale inside reserved slot so layout does not shift. */
+  transform: scale(1.12);
   animation: timerPulse 0.9s ease-in-out infinite;
 }
 .paused-tag,
@@ -369,12 +410,13 @@ input[readonly] { opacity: 0.75; }
   letter-spacing: 0.12em;
   text-transform: uppercase;
   margin-top: 0.1rem;
+  min-height: 0.9rem;
 }
 .paused-tag { color: var(--accent); }
 .urgent-tag { color: var(--danger); font-weight: 800; }
 @keyframes timerPulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.06); opacity: 0.88; }
+  0%, 100% { transform: scale(1.12); opacity: 1; }
+  50% { transform: scale(1.18); opacity: 0.88; }
 }
 .host-status-banner {
   text-align: center;
@@ -508,21 +550,20 @@ input[readonly] { opacity: 0.75; }
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   text-align: center;
   gap: 0.4rem;
+  transform: translateY(-4%);
 }
 .champion-center {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 0.35rem;
-  transform: translateY(-6%);
 }
 .champion-actions {
-  margin-top: auto;
+  margin-top: 0.75rem;
   padding-top: 8px;
   flex-wrap: wrap;
   justify-content: center;
@@ -545,6 +586,11 @@ input[readonly] { opacity: 0.75; }
 .result-board .scoreboard {
   width: min(100%, 22rem);
   font-size: clamp(1.05rem, 3.4vmin, 1.25rem);
+}
+.result-actions {
+  margin-top: 0.55rem;
+  padding-top: 4px;
+  justify-content: center;
 }
 .champion-board h2 { font-size: clamp(1.2rem, 4vmin, 1.55rem); }
 .champion-name {
@@ -755,11 +801,21 @@ input[readonly] { opacity: 0.75; }
   color: var(--mute);
   line-height: 1.1;
 }
-.player-list.guest-view { align-items: center; }
-.player-list.guest-view.cols-2 { justify-items: center; }
-.player-list.guest-view .player-row { justify-content: center; width: 100%; }
+.player-list.guest-view {
+  align-items: stretch;
+  width: 100%;
+}
+.player-list.guest-view.cols-2 { justify-items: stretch; }
+.player-list.guest-view .player-row {
+  justify-content: flex-start;
+  width: 100%;
+}
 .player-list.guest-view .player-name-line,
-.player-list.guest-view .name-edit { text-align: left; }
+.player-list.guest-view .name-edit {
+  text-align: left;
+  width: min(11rem, 46vw);
+  flex: 0 0 auto;
+}
 .player-list.guest-view .name-edit { width: min(11rem, 46vw); flex: 0 0 auto; }
 .kick-btn { flex: 0 0 auto; }
 .player-name-line { min-width: 0; }

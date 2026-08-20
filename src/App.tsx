@@ -66,6 +66,7 @@ export function App() {
   const lastHostWrite = useRef('');
   const lastPhaseKey = useRef('');
   const trackedPhaseKey = useRef('');
+  const recordedPackIds = useRef(new Set<string>());
   const roomSub = useRef<ReturnType<typeof cloudSubscribeRoom> | null>(null);
   const settingsTimer = useRef<number | null>(null);
   const hostSettingsRef = useRef(hostSettings);
@@ -127,17 +128,6 @@ export function App() {
       }
       if (data && 'topic' in data && typeof data.topic === 'string') {
         if (currentPhase !== 'collect_packs' && currentPhase !== 'collect_final_topics') return;
-        void cloudRecordTopic({
-          gameId: r.gameId,
-          roomCode: r.roomCode,
-          topic: data.topic,
-          stanceA: data.stanceA,
-          stanceB: data.stanceB,
-          suggestedBy: uid,
-          suggestedByName: r.players.find((p) => p.id === uid)?.name,
-        }).catch(() => {
-          /* topic archive should not block play */
-        });
         void cloudPatchGameState({
           roomCode: r.roomCode,
           patch: { [playerInputKey(uid)]: { pack: { topic: data.topic, stanceA: data.stanceA, stanceB: data.stanceB } } },
@@ -430,14 +420,43 @@ export function App() {
       stage: e.stageKind,
       match_index: e.matchIndex,
       active_players: e.activeIds.length,
+      topic_count: e.packPool.length,
     });
     if (e.phase === 'champion') {
       trackEvent('champion_crowned', {
         ...roomParams(room),
         stage: e.stageKind,
+        topic_count: e.packPool.length,
       });
     }
   }, [room, parsed]);
+
+  // Host-only: archive each pack once when it enters the engine (avoids N duplicate rows).
+  useEffect(() => {
+    if (!isHost || !room?.gameId || !parsed) return;
+    for (const pack of parsed.engine.packPool) {
+      if (recordedPackIds.current.has(pack.id)) continue;
+      recordedPackIds.current.add(pack.id);
+      const authorName = room.players.find((p) => p.id === pack.authorId)?.name;
+      trackEvent('topic_submitted', {
+        ...roomParams(room),
+        phase: parsed.engine.phase,
+        topic_count: parsed.engine.packPool.length,
+      });
+      void cloudRecordTopic({
+        gameId: room.gameId,
+        roomCode: room.roomCode,
+        packId: pack.id,
+        topic: pack.topic,
+        stanceA: pack.stanceA,
+        stanceB: pack.stanceB,
+        suggestedBy: pack.authorId,
+        suggestedByName: authorName,
+      }).catch(() => {
+        /* topic archive should not block play */
+      });
+    }
+  }, [isHost, room, parsed]);
 
   if (!ready) {
     return (
@@ -495,6 +514,7 @@ export function App() {
             prep_seconds: settings.prepSeconds,
             debate_seconds: settings.debateSeconds,
             speak_mode: settings.speakMode,
+            topic_count: 0,
           });
         }}
         onKick={(id) => {
@@ -550,40 +570,25 @@ export function App() {
       error={error}
       now={now}
       onInput={(next) => {
-        if (next.pack && room.gameId) {
-          trackEvent('topic_submitted', {
-            ...roomParams(room),
-            phase: engine.phase,
-          });
-          void cloudRecordTopic({
-            gameId: room.gameId,
-            roomCode: room.roomCode,
-            topic: next.pack.topic,
-            stanceA: next.pack.stanceA,
-            stanceB: next.pack.stanceB,
-            suggestedBy: user.id,
-            suggestedByName: room.players.find((p) => p.id === user.id)?.name ?? name,
-          }).catch(() => {
-            /* topic archive should not block play */
-          });
-        }
-        if (typeof next.splitA === 'number' && input.splitA == null) {
-          trackEvent('split_vote_locked', {
-            ...roomParams(room),
-            split_a: next.splitA,
-            stage: engine.stageKind,
-          });
-        }
-        if (next.topicVote && !input.topicVote) {
-          trackEvent('final_topic_voted', {
-            ...roomParams(room),
-          });
-        }
         void cloudPatchGameState({
           roomCode: room.roomCode,
           patch: { [playerInputKey(user.id)]: next },
           replace: false,
         });
+        if (typeof next.splitA === 'number' && input.splitA == null) {
+          trackEvent('split_vote_locked', {
+            ...roomParams(room),
+            split_a: next.splitA,
+            stage: engine.stageKind,
+            topic_count: engine.packPool.length,
+          });
+        }
+        if (next.topicVote && !input.topicVote) {
+          trackEvent('final_topic_voted', {
+            ...roomParams(room),
+            topic_count: engine.packPool.length,
+          });
+        }
       }}
       onHostContinue={() => {
         const next = hostContinue(engine, ids);
@@ -642,7 +647,8 @@ export function App() {
         window.location.hash = '';
       }}
       onPlayAgain={async () => {
-        trackEvent('play_again', roomParams(room));
+        trackEvent('play_again', { ...roomParams(room), topic_count: engine.packPool.length });
+        recordedPackIds.current = new Set();
         const stamped = stampSettings(hostSettings);
         await cloudReturnToLobby({ roomCode: room.roomCode, hostUserId: user.id, settings: stamped });
         roomSub.current?.publishLobbySettings(stamped);
