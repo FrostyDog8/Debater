@@ -13,7 +13,7 @@ export function HomeScreen({ name, code, error, busy, onName, onCode, onHost, on
   return (
     <div className="app home-screen">
       <h1 className="home-title">Debater</h1>
-      <p className="home-lede">Pick a side. Defend it. Let the crowd decide.</p>
+      <p className="home-lede">Get dealt a stance. Defend it. Let the crowd decide.</p>
 
       <div className="card fill home-card">
         <div className="home-section">
