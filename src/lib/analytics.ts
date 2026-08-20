@@ -7,6 +7,8 @@ declare global {
   }
 }
 
+export type AnalyticsParams = Record<string, string | number | boolean | undefined>;
+
 /** Load GA4 when `VITE_GA_MEASUREMENT_ID` is set. Safe no-op otherwise. */
 export function initAnalytics() {
   if (!GA_ID || typeof window === 'undefined' || typeof document === 'undefined') return;
@@ -25,11 +27,30 @@ export function initAnalytics() {
   document.head.appendChild(script);
 }
 
-export function trackEvent(eventName: string, params?: Record<string, string | number | boolean>) {
+function cleanParams(params?: AnalyticsParams): Record<string, string | number | boolean> | undefined {
+  if (!params) return undefined;
+  const out: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    out[key] = value;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+export function trackEvent(eventName: string, params?: AnalyticsParams) {
   if (!GA_ID || typeof window === 'undefined' || !window.gtag) return;
-  window.gtag('event', eventName, params);
+  window.gtag('event', eventName, cleanParams(params));
 }
 
 export function analyticsConfigured(): boolean {
   return !!GA_ID;
+}
+
+/** Shared room context for game events (no player names / PII). */
+export function roomParams(room: { gameId?: string | null; roomCode?: string; players?: { length: number } }) {
+  return {
+    game_id: room.gameId ?? undefined,
+    room_code: room.roomCode ?? undefined,
+    player_count: room.players?.length,
+  };
 }

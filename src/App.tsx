@@ -36,6 +36,7 @@ import {
 } from './lib/cloud';
 import { joinUrl, loadName, parseRoomFromHash, roomHash, saveName, type Room } from './lib/session';
 import { parsePayload, readInputs, wipeSplitsKeepClaps, wipedInputs, type PlayerInput } from './lib/sync';
+import { roomParams, trackEvent } from './lib/analytics';
 import { useAuthUser } from './lib/useAuthUser';
 import { HomeScreen } from './screens/HomeScreen';
 import { LobbyScreen } from './screens/LobbyScreen';
@@ -64,6 +65,7 @@ export function App() {
   const [hostSettings, setHostSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const lastHostWrite = useRef('');
   const lastPhaseKey = useRef('');
+  const trackedPhaseKey = useRef('');
   const roomSub = useRef<ReturnType<typeof cloudSubscribeRoom> | null>(null);
   const settingsTimer = useRef<number | null>(null);
   const hostSettingsRef = useRef(hostSettings);
@@ -243,6 +245,7 @@ export function App() {
       const fromHash = parseRoomFromHash();
       if (!fromHash) return;
       if (fromHash === 'TEST') {
+        trackEvent('open_lab', { source: 'hash' });
         window.location.href = `${import.meta.env.BASE_URL}lab.html`;
         return;
       }
@@ -253,11 +256,19 @@ export function App() {
       try {
         await cloudJoinRoom({ roomCode: fromHash, userId: user.id, name: nameRef.current.trim() || 'Player' });
         if (cancelled) return;
+        trackEvent('room_joined', { room_code: fromHash, source: 'link' });
         sub?.unsubscribe();
         sub = attachRoom(fromHash);
       } catch (e) {
         if (attachedCode.current === fromHash) attachedCode.current = '';
-        if (!cancelled) setError(isLobbyNotFoundError(e) ? "That lobby code wasn't found. Check the code, or ask the host for a fresh link." : String((e as Error).message));
+        if (!cancelled) {
+          trackEvent('join_failed', {
+            room_code: fromHash,
+            source: 'link',
+            reason: isLobbyNotFoundError(e) ? 'not_found' : 'error',
+          });
+          setError(isLobbyNotFoundError(e) ? "That lobby code wasn't found. Check the code, or ask the host for a fresh link." : String((e as Error).message));
+        }
       }
     };
 
@@ -280,8 +291,10 @@ export function App() {
       blockedJoinCode.current = '';
       setHostSettings(DEFAULT_SETTINGS);
       seededHostRoom.current = created;
+      trackEvent('room_created', { room_code: created });
       attachRoom(created);
     } catch (e) {
+      trackEvent('room_create_failed', { reason: 'error' });
       setError(String((e as Error).message));
     } finally {
       setBusy(false);
@@ -292,6 +305,7 @@ export function App() {
     if (!user) return;
     const codeUpper = code.trim().toUpperCase();
     if (codeUpper === 'TEST') {
+      trackEvent('open_lab', { source: 'code' });
       window.location.href = `${import.meta.env.BASE_URL}lab.html`;
       return;
     }
@@ -301,8 +315,14 @@ export function App() {
       leavingRef.current = false;
       blockedJoinCode.current = '';
       await cloudJoinRoom({ roomCode: codeUpper, userId: user.id, name: name.trim() });
+      trackEvent('room_joined', { room_code: codeUpper, source: 'code' });
       attachRoom(code);
     } catch (e) {
+      trackEvent('join_failed', {
+        room_code: codeUpper,
+        source: 'code',
+        reason: isLobbyNotFoundError(e) ? 'not_found' : 'error',
+      });
       setError(isLobbyNotFoundError(e) ? "That lobby code wasn't found. Check the code, or ask the host for a fresh link." : String((e as Error).message));
     } finally {
       setBusy(false);
@@ -395,6 +415,30 @@ export function App() {
     return () => window.clearInterval(t);
   }, [isHost, room?.roomCode, room?.status]);
 
+  useEffect(() => {
+    if (!room || room.status !== 'playing' || !parsed) {
+      if (!room || room.status !== 'playing') trackedPhaseKey.current = '';
+      return;
+    }
+    const e = parsed.engine;
+    const key = `${e.phase}:${e.matchIndex}:${e.stageKind}:${e.championId ?? ''}`;
+    if (trackedPhaseKey.current === key) return;
+    trackedPhaseKey.current = key;
+    trackEvent('phase_enter', {
+      ...roomParams(room),
+      phase: e.phase,
+      stage: e.stageKind,
+      match_index: e.matchIndex,
+      active_players: e.activeIds.length,
+    });
+    if (e.phase === 'champion') {
+      trackEvent('champion_crowned', {
+        ...roomParams(room),
+        stage: e.stageKind,
+      });
+    }
+  }, [room, parsed]);
+
   if (!ready) {
     return (
       <div className="app">
@@ -445,9 +489,20 @@ export function App() {
             settings,
           );
           await cloudStartGame({ roomCode: room.roomCode, hostUserId: user.id, gameState: { engine } satisfies GamePayload });
+          trackEvent('game_started', {
+            ...roomParams(room),
+            player_count: room.players.length,
+            prep_seconds: settings.prepSeconds,
+            debate_seconds: settings.debateSeconds,
+            speak_mode: settings.speakMode,
+          });
         }}
-        onKick={(id) => void cloudKickPlayer({ roomCode: room.roomCode, hostUserId: user.id, targetUserId: id })}
+        onKick={(id) => {
+          trackEvent('player_kicked', roomParams(room));
+          void cloudKickPlayer({ roomCode: room.roomCode, hostUserId: user.id, targetUserId: id });
+        }}
         onLeave={async () => {
+          trackEvent('leave_room', { ...roomParams(room), from: 'lobby', was_host: isHost });
           leavingRef.current = true;
           blockedJoinCode.current = room.roomCode;
           await cloudLeaveRoom({ roomCode: room.roomCode, userId: user.id });
@@ -459,6 +514,7 @@ export function App() {
         }}
         onCopy={async () => {
           await navigator.clipboard.writeText(joinUrl(room.roomCode));
+          trackEvent('invite_copied', roomParams(room));
         }}
         onName={(next) => {
           setName(next);
@@ -475,6 +531,7 @@ export function App() {
   // Applying `tickClock` here makes the UI keep moving even if realtime updates hitch.
   const engine = isHost ? baseEngine : tickClock(baseEngine, now);
   const input: PlayerInput = user ? (readInputs(parsed?.payload, ids)[user.id] ?? {}) : {};
+
   // Let `LabScreen` know what phase each lab device is in.
   // This is used to enable/disable the auto-fill button.
   try {
@@ -494,6 +551,10 @@ export function App() {
       now={now}
       onInput={(next) => {
         if (next.pack && room.gameId) {
+          trackEvent('topic_submitted', {
+            ...roomParams(room),
+            phase: engine.phase,
+          });
           void cloudRecordTopic({
             gameId: room.gameId,
             roomCode: room.roomCode,
@@ -506,6 +567,18 @@ export function App() {
             /* topic archive should not block play */
           });
         }
+        if (typeof next.splitA === 'number' && input.splitA == null) {
+          trackEvent('split_vote_locked', {
+            ...roomParams(room),
+            split_a: next.splitA,
+            stage: engine.stageKind,
+          });
+        }
+        if (next.topicVote && !input.topicVote) {
+          trackEvent('final_topic_voted', {
+            ...roomParams(room),
+          });
+        }
         void cloudPatchGameState({
           roomCode: room.roomCode,
           patch: { [playerInputKey(user.id)]: next },
@@ -514,6 +587,12 @@ export function App() {
       }}
       onHostContinue={() => {
         const next = hostContinue(engine, ids);
+        trackEvent('host_continue', {
+          ...roomParams(room),
+          from_phase: engine.phase,
+          to_phase: next.phase,
+          stage: engine.stageKind,
+        });
         const patch: GamePayload = { engine: next };
         if (
           next.phase === 'prep' ||
@@ -529,12 +608,22 @@ export function App() {
         void cloudPatchGameState({ roomCode: room.roomCode, patch, replace: false });
       }}
       onHostPause={() => {
-        const next = isPaused(engine) ? hostUnpause(engine, Date.now()) : hostPause(engine, Date.now());
+        const pausing = !isPaused(engine);
+        const next = pausing ? hostPause(engine, Date.now()) : hostUnpause(engine, Date.now());
+        trackEvent(pausing ? 'host_pause' : 'host_unpause', {
+          ...roomParams(room),
+          phase: engine.phase,
+        });
         lastHostWrite.current = JSON.stringify(next);
         void cloudPatchGameState({ roomCode: room.roomCode, patch: { engine: next }, replace: false });
       }}
       onHostSkip={() => {
         const next = hostSkipDebate(engine);
+        trackEvent('host_skip_to_vote', {
+          ...roomParams(room),
+          from_phase: engine.phase,
+          stage: engine.stageKind,
+        });
         lastPhaseKey.current = `${next.phase}:${next.matchIndex}:${next.stageKind}`;
         lastHostWrite.current = JSON.stringify(next);
         const patch: GamePayload = { engine: next };
@@ -542,6 +631,7 @@ export function App() {
         void cloudPatchGameState({ roomCode: room.roomCode, patch, replace: false });
       }}
       onLeave={async () => {
+        trackEvent('leave_room', { ...roomParams(room), from: 'play', was_host: isHost });
         leavingRef.current = true;
         blockedJoinCode.current = room.roomCode;
         await cloudLeaveRoom({ roomCode: room.roomCode, userId: user.id });
@@ -552,6 +642,7 @@ export function App() {
         window.location.hash = '';
       }}
       onPlayAgain={async () => {
+        trackEvent('play_again', roomParams(room));
         const stamped = stampSettings(hostSettings);
         await cloudReturnToLobby({ roomCode: room.roomCode, hostUserId: user.id, settings: stamped });
         roomSub.current?.publishLobbySettings(stamped);
