@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  allRequiredPacksIn,
   allSplitsIn,
   allTopicVotesIn,
   createEngine,
@@ -13,6 +14,7 @@ import {
   MIN_START_PLAYERS,
   parseSettings,
   resolveSplit,
+  schedulePairedStage,
   skipRestOfRound,
   tickClock,
   type Settings,
@@ -416,6 +418,9 @@ export function App() {
     const epoch = syncEpoch.current;
     const previousPhase = parsed.engine.phase;
     let next = tickClock(parsed.engine, Date.now());
+    if (next.phase === 'collect_packs' && allRequiredPacksIn(next, ids) && next.matches.length === 0) {
+      next = schedulePairedStage(next);
+    }
     if (next.phase === 'split_vote' && previousPhase === 'split_vote' && allSplitsIn(next, ids)) {
       next = resolveSplit(next, ids);
     }

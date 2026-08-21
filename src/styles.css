@@ -657,6 +657,7 @@ input[readonly] { opacity: 0.75; }
 .next-up {
   font-size: clamp(1.25rem, 4.4vmin, 1.65rem);
   color: var(--accent-2);
+  text-align: center;
 }
 .result-board .scoreboard {
   width: min(100%, 22rem);

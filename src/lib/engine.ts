@@ -462,6 +462,21 @@ function buildStagePairs(
   return { pairs, leftover: null };
 }
 
+/** First pair to debate once the round is ready (or finalists). */
+export function openingDebatePair(engine: Engine): { aId: PlayerId; bId: PlayerId } | null {
+  if (engine.phase === 'collect_packs') {
+    const m = engine.matches[0];
+    return m ? { aId: m.aId, bId: m.bId } : null;
+  }
+  if (
+    (engine.phase === 'collect_final_topics' || engine.phase === 'vote_final_topic') &&
+    engine.activeIds.length >= 2
+  ) {
+    return { aId: engine.activeIds[0]!, bId: engine.activeIds[1]! };
+  }
+  return null;
+}
+
 function buildMatches(
   pairs: [PlayerId, PlayerId][],
   pool: Pack[],
@@ -502,7 +517,14 @@ function resetStageScores(ids: PlayerId[]): Record<PlayerId, number> {
   return Object.fromEntries(ids.map((id) => [id, 0]));
 }
 
-export function beginPairedStage(engine: Engine, rng: () => number = Math.random): Engine {
+/**
+ * Lock in pairings while still on collect_packs so the UI can show who debates first
+ * before the host presses Play round.
+ */
+export function schedulePairedStage(engine: Engine, rng: () => number = Math.random): Engine {
+  if (engine.phase !== 'collect_packs') return engine;
+  if (engine.matches.length > 0) return engine;
+
   const ids = sortIds(engine.activeIds);
   const kind = stageFor(ids.length);
 
@@ -516,8 +538,9 @@ export function beginPairedStage(engine: Engine, rng: () => number = Math.random
     engine.matchHistory.length === 0
       ? 0
       : Math.max(...engine.matchHistory.map((h) => h.roundIndex)) + 1;
-  return startMatch({
+  return {
     ...engine,
+    phase: 'collect_packs',
     stageKind: kind,
     leftoverId: leftover,
     leftoverPending: leftover != null,
@@ -529,7 +552,13 @@ export function beginPairedStage(engine: Engine, rng: () => number = Math.random
     scores: resetStageScores(ids),
     replayNote: null,
     ...emptyMatchInputs(),
-  });
+  };
+}
+
+export function beginPairedStage(engine: Engine, rng: () => number = Math.random): Engine {
+  const scheduled = schedulePairedStage(engine, rng);
+  if (scheduled.phase !== 'collect_packs') return scheduled;
+  return startMatch(scheduled);
 }
 
 export function beginFinalTopicCollection(engine: Engine): Engine {
@@ -1072,6 +1101,7 @@ export function hostContinue(engine: Engine, roomPlayerIds: PlayerId[], rng: () 
   }
 
   if (engine.phase === 'collect_packs' && allRequiredPacksIn(engine, roomPlayerIds)) {
+    if (engine.matches.length > 0) return startMatch(engine);
     return beginPairedStage(engine, rng);
   }
 

@@ -19,6 +19,8 @@ import {
   packProgress,
   parseSettings,
   playersNeedingPack,
+  openingDebatePair,
+  schedulePairedStage,
   skipRestOfRound,
   stageFor,
   submitSplit,
@@ -58,6 +60,18 @@ describe('stageFor', () => {
 });
 
 describe('pairings', () => {
+  it('schedules the opening debate while still collecting', () => {
+    const ids = ['p1', 'p2', 'p3'];
+    const e0 = fillPacks(ids, rng(4));
+    const e = schedulePairedStage(e0, rng(4));
+    expect(e.phase).toBe('collect_packs');
+    expect(e.matches.length).toBeGreaterThan(0);
+    expect(openingDebatePair(e)).toEqual({ aId: e.matches[0]!.aId, bId: e.matches[0]!.bId });
+    const started = hostContinue(e, ids, rng(4));
+    expect(started.phase).toBe('prep');
+    expect(started.matches[0]).toEqual(e.matches[0]);
+  });
+
   it('never assigns a debater their own pack (3-player)', () => {
     const ids = ['p1', 'p2', 'p3'];
     const e0 = fillPacks(ids, rng(4));

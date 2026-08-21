@@ -12,6 +12,7 @@ import {
   listenerPacks,
   listenersOf,
   lowestDrop,
+  openingDebatePair,
   packProgress,
   packTextReady,
   peekNextMatch,
@@ -94,12 +95,19 @@ export function PlayScreen({
   const [draft, setDraft] = useState({ topic: '', stanceA: '', stanceB: '' });
   const [pickedTopicId, setPickedTopicId] = useState<string | null>(null);
   const packValid = packTextReady(draft.topic, draft.stanceA, draft.stanceB);
+  const collectKey = `${engine.phase}:${engine.roundIndex}:${engine.collectBaselinePackIds.length}`;
   useEffect(() => {
     if (engine.phase !== 'debate') setLocalClapAt(0);
   }, [engine.phase]);
   useEffect(() => {
     if (engine.phase !== 'vote_final_topic') setPickedTopicId(null);
   }, [engine.phase]);
+  useEffect(() => {
+    if (engine.phase === 'collect_packs' || engine.phase === 'collect_final_topics') {
+      setDraft({ topic: '', stanceA: '', stanceB: '' });
+    }
+  }, [collectKey, engine.phase]);
+  const firstDebate = openingDebatePair(engine);
   const bursts = useClapBursts(engine.clapA, engine.clapB);
   const showLiveScores =
     (engine.phase === 'match_result' &&
@@ -130,6 +138,7 @@ export function PlayScreen({
       ...input,
       pack: { topic: draft.topic.trim(), stanceA: draft.stanceA.trim(), stanceB: draft.stanceB.trim() },
     });
+    setDraft({ topic: '', stanceA: '', stanceB: '' });
   };
 
   const clapSide = (side: 'A' | 'B') => {
@@ -172,7 +181,15 @@ export function PlayScreen({
                     : 'All topics are in. Waiting for the host to start the round.'
                   : 'Pack in. Waiting on others…'}
               </p>
-            ) : (
+            ) : null}
+            {packsReady && firstDebate ? (
+              <p className="next-up">
+                {engine.phase === 'collect_final_topics'
+                  ? `Finalists: ${nameOf(room, firstDebate.aId)} vs ${nameOf(room, firstDebate.bId)}`
+                  : `First up: ${nameOf(room, firstDebate.aId)} vs ${nameOf(room, firstDebate.bId)}`}
+              </p>
+            ) : null}
+            {!(engine.phase === 'collect_final_topics' && engine.activeIds.includes(selfId)) && !packIn ? (
               <>
                 <label>Topic</label>
                 <input value={draft.topic} onChange={(e) => setDraft({ ...draft, topic: e.target.value })} />
@@ -186,7 +203,7 @@ export function PlayScreen({
                   </button>
                 </div>
               </>
-            )}
+            ) : null}
             <div className="dock" style={{ marginTop: 'auto', paddingTop: 8 }}>
               {host ? (
                 <button className="btn" disabled={!packsReady} onClick={onHostContinue}>
@@ -210,6 +227,11 @@ export function PlayScreen({
             {engine.finalSelectedPackId ? (
               <>
                 <p className="final-topic-ready">All topic votes are in.</p>
+                {firstDebate ? (
+                  <p className="next-up">
+                    Finalists: {nameOf(room, firstDebate.aId)} vs {nameOf(room, firstDebate.bId)}
+                  </p>
+                ) : null}
                 <div className="dock" style={{ marginTop: 'auto', paddingTop: 8 }}>
                   {host ? (
                     <button className="btn" onClick={onHostContinue}>
